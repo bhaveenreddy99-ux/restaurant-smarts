@@ -18,7 +18,7 @@ import EnterInventoryPage from "@/pages/app/inventory/EnterInventory";
 // Review and Approved pages removed from sidebar — redirects handle old URLs
 import ImportPage from "@/pages/app/inventory/Import";
 import SmartOrderPage from "@/pages/app/SmartOrder";
-import ParListPage from "@/pages/app/ParList";
+import PARManagementPage from "@/pages/app/PARManagement";
 
 import OrdersPage from "@/pages/app/Orders";
 import ReportsPage from "@/pages/app/Reports";
@@ -56,7 +56,7 @@ const App = () => (
                 <Route path="inventory/approved" element={<Navigate to="/app/inventory/enter" replace />} />
                 <Route path="inventory/import/:listId" element={<ImportPage />} />
                 <Route path="smart-order" element={<SmartOrderPage />} />
-                <Route path="par" element={<ParListPage />} />
+                <Route path="par" element={<PARManagementPage />} />
                 
                 <Route path="orders" element={<OrdersPage />} />
                 <Route path="reports" element={<ReportsPage />} />
