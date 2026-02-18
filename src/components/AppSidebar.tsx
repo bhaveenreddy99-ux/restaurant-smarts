@@ -38,6 +38,7 @@ const mainNav = [
 
 const inventoryNav = [
   { title: "List Management", url: "/app/inventory/lists", icon: ClipboardList },
+  { title: "Par List", url: "/app/par-list", icon: BookOpen },
   { title: "Inventory Management", url: "/app/inventory/enter", icon: Package },
   { title: "Smart Order", url: "/app/smart-order", icon: ShoppingCart },
   { title: "Purchase History", url: "/app/purchase-history", icon: Receipt },
