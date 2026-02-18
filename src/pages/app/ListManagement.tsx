@@ -61,8 +61,13 @@ export default function ListManagementPage() {
   const [importStep, setImportStep] = useState<"upload" | "map" | "preview">("upload");
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const requiredFields = ["item_name", "pack_size", "unit_price", "category"];
-  const optionalFields = ["item_number"];
+  const requiredFields = ["item_name", "pack_size", "unit_price"];
+  const optionalFields = ["item_number", "category"];
+
+  // Category mapping mode for import
+  const [categoryMode, setCategoryMode] = useState<"column" | "default" | "uncategorized">("column");
+  const [defaultCategoryId, setDefaultCategoryId] = useState("");
+  const [newDefaultCatName, setNewDefaultCatName] = useState("");
 
   const restaurantId = currentRestaurant?.id;
 
@@ -254,28 +259,73 @@ export default function ListManagementPage() {
     reader.readAsBinaryString(file);
   };
 
+  const handleCreateDefaultCategory = async () => {
+    if (!restaurantId || !newDefaultCatName.trim()) return;
+    const maxOrder = categories.length > 0 ? Math.max(...categories.map(c => c.sort_order)) + 1 : 0;
+    const { data, error } = await supabase.from("categories").insert({
+      restaurant_id: restaurantId,
+      name: newDefaultCatName.trim(),
+      sort_order: maxOrder,
+    }).select().single();
+    if (error) { toast.error(error.message); return; }
+    toast.success("Category created");
+    setNewDefaultCatName("");
+    await fetchCategories();
+    if (data) setDefaultCategoryId(data.id);
+  };
+
   const handleImportPreview = () => {
-    if (!importMapping.item_name || !importMapping.pack_size || !importMapping.unit_price || !importMapping.category) {
+    if (!importMapping.item_name || !importMapping.pack_size || !importMapping.unit_price) {
       toast.error("Map all required fields");
       return;
     }
-    const preview = importData.map(row => ({
-      item_name: String(row[importMapping.item_name] || "").trim(),
-      pack_size: String(row[importMapping.pack_size] || "").trim(),
-      unit_price: parseFloat(row[importMapping.unit_price]) || 0,
-      category: String(row[importMapping.category] || "").trim(),
-      item_number: importMapping.item_number ? String(row[importMapping.item_number] || "").trim() : "",
-    })).filter(r => r.item_name && r.category);
+    if (categoryMode === "column" && !importMapping.category) {
+      toast.error("Select a column to map for Category, or choose another category mode");
+      return;
+    }
+    if (categoryMode === "default" && !defaultCategoryId) {
+      toast.error("Select a default category");
+      return;
+    }
+    const preview = importData.map(row => {
+      let category = "";
+      if (categoryMode === "column") {
+        category = String(row[importMapping.category] || "").trim();
+      } else if (categoryMode === "default") {
+        category = categories.find(c => c.id === defaultCategoryId)?.name || "";
+      } else {
+        category = "";
+      }
+      return {
+        item_name: String(row[importMapping.item_name] || "").trim(),
+        pack_size: String(row[importMapping.pack_size] || "").trim(),
+        unit_price: parseFloat(row[importMapping.unit_price]) || 0,
+        category,
+        item_number: importMapping.item_number ? String(row[importMapping.item_number] || "").trim() : "",
+      };
+    }).filter(r => r.item_name);
     setImportPreview(preview);
     setImportStep("preview");
   };
 
   const handleImportConfirm = async () => {
     if (!restaurantId) return;
-    // Collect unique category names
-    const uniqueCats = [...new Set(importPreview.map(r => r.category))];
+
+    // For "uncategorized" mode, we need a fallback category
+    // Items with empty category will have category_id = first available or create "Uncategorized"
+    const itemsWithCategory = importPreview.filter(r => r.category);
+    const itemsWithoutCategory = importPreview.filter(r => !r.category);
+
+    // Collect unique category names from items that have one
+    const uniqueCats = [...new Set(itemsWithCategory.map(r => r.category))];
     const existingCatNames = categories.map(c => c.name);
     const newCats = uniqueCats.filter(c => !existingCatNames.includes(c));
+
+    // If there are uncategorized items, ensure "Uncategorized" category exists
+    let needsUncategorized = itemsWithoutCategory.length > 0;
+    if (needsUncategorized && !existingCatNames.includes("Uncategorized") && !newCats.includes("Uncategorized")) {
+      newCats.push("Uncategorized");
+    }
 
     // Create missing categories
     if (newCats.length > 0) {
@@ -294,10 +344,11 @@ export default function ListManagementPage() {
     if (!freshCats) { toast.error("Failed to load categories"); return; }
 
     const catMap = new Map(freshCats.map(c => [c.name, c.id]));
+    const uncategorizedId = catMap.get("Uncategorized");
     let created = 0;
 
     for (const row of importPreview) {
-      const catId = catMap.get(row.category);
+      const catId = row.category ? catMap.get(row.category) : uncategorizedId;
       if (!catId) continue;
       const { error } = await supabase.from("inventory_items").insert({
         restaurant_id: restaurantId,
@@ -316,6 +367,8 @@ export default function ListManagementPage() {
     setImportStep("upload");
     setImportData([]);
     setImportPreview([]);
+    setCategoryMode("column");
+    setDefaultCategoryId("");
     fetchCategories();
     fetchItems();
   };
@@ -363,7 +416,7 @@ export default function ListManagementPage() {
               {importStep === "map" && (
                 <div className="space-y-4">
                   <p className="text-sm text-muted-foreground">Map your file columns to the required fields:</p>
-                  {[...requiredFields, ...optionalFields].map(field => (
+                  {[...requiredFields, ...optionalFields.filter(f => f !== "category")].map(field => (
                     <div key={field} className="flex items-center gap-3">
                       <Label className="w-28 text-xs capitalize">{field.replace("_", " ")}{requiredFields.includes(field) && " *"}</Label>
                       <Select value={importMapping[field] || ""} onValueChange={v => setImportMapping(prev => ({ ...prev, [field]: v }))}>
@@ -378,6 +431,66 @@ export default function ListManagementPage() {
                       </Select>
                     </div>
                   ))}
+
+                  {/* Category mapping mode */}
+                  <div className="border rounded-md p-3 space-y-3 bg-muted/20">
+                    <Label className="text-xs font-semibold">Category Assignment</Label>
+                    <div className="space-y-2">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="radio" name="catMode" checked={categoryMode === "column"} onChange={() => setCategoryMode("column")} className="accent-primary" />
+                        <span className="text-xs">Map from file column</span>
+                      </label>
+                      {categoryMode === "column" && (
+                        <Select value={importMapping.category || ""} onValueChange={v => setImportMapping(prev => ({ ...prev, category: v }))}>
+                          <SelectTrigger className="h-8 text-xs ml-6">
+                            <SelectValue placeholder="Select category column" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {importHeaders.map(h => (
+                              <SelectItem key={h} value={h}>{h}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="radio" name="catMode" checked={categoryMode === "default"} onChange={() => setCategoryMode("default")} className="accent-primary" />
+                        <span className="text-xs">Use one default category for all rows</span>
+                      </label>
+                      {categoryMode === "default" && (
+                        <div className="ml-6 space-y-2">
+                          <Select value={defaultCategoryId} onValueChange={setDefaultCategoryId}>
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue placeholder="Select category" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {categories.map(c => (
+                                <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <div className="flex gap-2">
+                            <Input
+                              value={newDefaultCatName}
+                              onChange={e => setNewDefaultCatName(e.target.value)}
+                              placeholder="Create new category..."
+                              className="h-7 text-xs flex-1"
+                              onKeyDown={e => e.key === "Enter" && handleCreateDefaultCategory()}
+                            />
+                            <Button size="sm" variant="outline" className="h-7 text-xs px-2" onClick={handleCreateDefaultCategory} disabled={!newDefaultCatName.trim()}>
+                              <Plus className="h-3 w-3 mr-1" /> Create
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input type="radio" name="catMode" checked={categoryMode === "uncategorized"} onChange={() => setCategoryMode("uncategorized")} className="accent-primary" />
+                        <span className="text-xs">Leave uncategorized</span>
+                      </label>
+                    </div>
+                  </div>
+
                   <Button onClick={handleImportPreview} className="w-full bg-gradient-amber">Preview</Button>
                 </div>
               )}
@@ -398,7 +511,7 @@ export default function ListManagementPage() {
                         {importPreview.slice(0, 20).map((row, i) => (
                           <TableRow key={i}>
                             <TableCell className="text-xs">{row.item_name}</TableCell>
-                            <TableCell className="text-xs">{row.category}</TableCell>
+                            <TableCell className="text-xs">{row.category || <Badge variant="secondary" className="text-[10px]">Uncategorized</Badge>}</TableCell>
                             <TableCell className="text-xs">{row.pack_size}</TableCell>
                             <TableCell className="text-xs text-right">${row.unit_price.toFixed(2)}</TableCell>
                           </TableRow>
