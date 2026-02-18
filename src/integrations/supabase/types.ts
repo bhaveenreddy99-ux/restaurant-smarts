@@ -40,6 +40,38 @@ export type Database = {
           },
         ]
       }
+      categories: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          restaurant_id: string
+          sort_order: number
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          restaurant_id: string
+          sort_order?: number
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          restaurant_id?: string
+          sort_order?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "categories_restaurant_id_fkey"
+            columns: ["restaurant_id"]
+            isOneToOne: false
+            referencedRelation: "restaurants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       custom_list_items: {
         Row: {
           category: string | null
@@ -359,6 +391,57 @@ export type Database = {
           },
           {
             foreignKeyName: "inventory_import_files_restaurant_id_fkey"
+            columns: ["restaurant_id"]
+            isOneToOne: false
+            referencedRelation: "restaurants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      inventory_items: {
+        Row: {
+          category_id: string
+          created_at: string
+          id: string
+          item_name: string
+          item_number: string | null
+          pack_size: string
+          restaurant_id: string
+          sort_order: number
+          unit_price: number
+        }
+        Insert: {
+          category_id: string
+          created_at?: string
+          id?: string
+          item_name: string
+          item_number?: string | null
+          pack_size: string
+          restaurant_id: string
+          sort_order?: number
+          unit_price?: number
+        }
+        Update: {
+          category_id?: string
+          created_at?: string
+          id?: string
+          item_name?: string
+          item_number?: string | null
+          pack_size?: string
+          restaurant_id?: string
+          sort_order?: number
+          unit_price?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inventory_items_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "inventory_items_restaurant_id_fkey"
             columns: ["restaurant_id"]
             isOneToOne: false
             referencedRelation: "restaurants"
@@ -922,6 +1005,55 @@ export type Database = {
           },
           {
             foreignKeyName: "par_guides_restaurant_id_fkey"
+            columns: ["restaurant_id"]
+            isOneToOne: false
+            referencedRelation: "restaurants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      par_items: {
+        Row: {
+          category_id: string
+          created_at: string
+          id: string
+          inventory_item_id: string
+          par_level: number
+          restaurant_id: string
+        }
+        Insert: {
+          category_id: string
+          created_at?: string
+          id?: string
+          inventory_item_id: string
+          par_level?: number
+          restaurant_id: string
+        }
+        Update: {
+          category_id?: string
+          created_at?: string
+          id?: string
+          inventory_item_id?: string
+          par_level?: number
+          restaurant_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "par_items_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "par_items_inventory_item_id_fkey"
+            columns: ["inventory_item_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_items"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "par_items_restaurant_id_fkey"
             columns: ["restaurant_id"]
             isOneToOne: false
             referencedRelation: "restaurants"
