@@ -42,24 +42,30 @@ export type Database = {
       }
       custom_list_items: {
         Row: {
+          category: string | null
           id: string
           item_name: string
           list_id: string
           quantity: number | null
+          sort_order: number | null
           unit: string | null
         }
         Insert: {
+          category?: string | null
           id?: string
           item_name: string
           list_id: string
           quantity?: number | null
+          sort_order?: number | null
           unit?: string | null
         }
         Update: {
+          category?: string | null
           id?: string
           item_name?: string
           list_id?: string
           quantity?: number | null
+          sort_order?: number | null
           unit?: string | null
         }
         Relationships: [
@@ -74,6 +80,7 @@ export type Database = {
       }
       custom_lists: {
         Row: {
+          categories: Json | null
           created_at: string
           created_by: string | null
           id: string
@@ -81,6 +88,7 @@ export type Database = {
           restaurant_id: string
         }
         Insert: {
+          categories?: Json | null
           created_at?: string
           created_by?: string | null
           id?: string
@@ -88,6 +96,7 @@ export type Database = {
           restaurant_id: string
         }
         Update: {
+          categories?: Json | null
           created_at?: string
           created_by?: string | null
           id?: string
