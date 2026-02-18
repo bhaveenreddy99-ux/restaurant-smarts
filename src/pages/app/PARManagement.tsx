@@ -93,8 +93,11 @@ export default function PARManagementPage() {
     fetchItems(data.id);
   };
 
-  const handleParLevelChange = (itemId: string, newLevel: number) => {
-    setItems(prev => prev.map(i => i.id === itemId ? { ...i, par_level: newLevel } : i));
+  const handleParLevelChange = (itemId: string, value: string) => {
+    const numVal = value === "" ? 0 : parseFloat(value);
+    if (!isNaN(numVal) && numVal >= 0) {
+      setItems(prev => prev.map(i => i.id === itemId ? { ...i, par_level: numVal } : i));
+    }
   };
 
   const handleSaveParLevel = useCallback(async (itemId: string, level: number) => {
@@ -122,11 +125,23 @@ export default function PARManagementPage() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent, currentIndex: number) => {
-    if (e.key === "Enter") {
+    if (e.key === "Enter" || e.key === "ArrowDown") {
       e.preventDefault();
+      const currentItem = filteredItems[currentIndex];
+      if (currentItem) handleSaveParLevel(currentItem.id, Number(currentItem.par_level));
       const nextItem = filteredItems[currentIndex + 1];
       if (nextItem && inputRefs.current[nextItem.id]) {
         inputRefs.current[nextItem.id]?.focus();
+        inputRefs.current[nextItem.id]?.select();
+      }
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      const currentItem = filteredItems[currentIndex];
+      if (currentItem) handleSaveParLevel(currentItem.id, Number(currentItem.par_level));
+      const prevItem = filteredItems[currentIndex - 1];
+      if (prevItem && inputRefs.current[prevItem.id]) {
+        inputRefs.current[prevItem.id]?.focus();
+        inputRefs.current[prevItem.id]?.select();
       }
     }
   };
@@ -334,10 +349,12 @@ export default function PARManagementPage() {
                                 <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">PAR Level</label>
                                 <Input
                                   ref={el => { inputRefs.current[item.id] = el; }}
-                                  inputMode="numeric"
-                                  pattern="[0-9]*"
-                                  value={item.par_level || ""}
-                                  onChange={e => handleParLevelChange(item.id, +e.target.value)}
+                                  inputMode="decimal"
+                                  type="number"
+                                  step="0.1"
+                                  min="0"
+                                  value={item.par_level ?? ""}
+                                  onChange={e => handleParLevelChange(item.id, e.target.value)}
                                   onBlur={() => handleSaveParLevel(item.id, Number(item.par_level))}
                                   onKeyDown={e => handleKeyDown(e, globalIdx)}
                                   className="h-12 text-lg font-mono text-center mt-1 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
@@ -389,10 +406,12 @@ export default function PARManagementPage() {
                         {isManagerOrOwner ? (
                           <Input
                             ref={el => { inputRefs.current[i.id] = el; }}
-                            inputMode="numeric"
-                            pattern="[0-9]*"
-                            value={i.par_level}
-                            onChange={e => handleParLevelChange(i.id, +e.target.value)}
+                            inputMode="decimal"
+                            type="number"
+                            step="0.1"
+                            min="0"
+                            value={i.par_level ?? ""}
+                            onChange={e => handleParLevelChange(i.id, e.target.value)}
                             onBlur={() => handleSaveParLevel(i.id, Number(i.par_level))}
                             onKeyDown={e => handleKeyDown(e, idx)}
                             className="w-20 h-8 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
