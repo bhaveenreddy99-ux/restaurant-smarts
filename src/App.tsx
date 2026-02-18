@@ -13,12 +13,11 @@ import DemoPage from "@/pages/Demo";
 import CreateRestaurantPage from "@/pages/onboarding/CreateRestaurant";
 import AppLayout from "@/layouts/AppLayout";
 import DashboardPage from "@/pages/app/Dashboard";
-import InventoryListsPage from "@/pages/app/inventory/InventoryLists";
+import ListManagementPage from "@/pages/app/ListManagement";
 import EnterInventoryPage from "@/pages/app/inventory/EnterInventory";
 // Review and Approved pages removed from sidebar — redirects handle old URLs
 import ImportPage from "@/pages/app/inventory/Import";
 import SmartOrderPage from "@/pages/app/SmartOrder";
-import PARManagementPage from "@/pages/app/PARManagement";
 import ParListPage from "@/pages/app/ParList";
 
 import OrdersPage from "@/pages/app/Orders";
@@ -50,15 +49,14 @@ const App = () => (
               <Route path="/app" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
                 <Route index element={<Navigate to="dashboard" replace />} />
                 <Route path="dashboard" element={<DashboardPage />} />
-                <Route path="inventory/lists" element={<InventoryListsPage />} />
+                <Route path="inventory/lists" element={<ListManagementPage />} />
                 <Route path="inventory/enter" element={<EnterInventoryPage />} />
                 {/* Review and Approved routes kept for backward compat but redirect */}
                 <Route path="inventory/review" element={<Navigate to="/app/inventory/enter" replace />} />
                 <Route path="inventory/approved" element={<Navigate to="/app/inventory/enter" replace />} />
                 <Route path="inventory/import/:listId" element={<ImportPage />} />
                 <Route path="smart-order" element={<SmartOrderPage />} />
-                <Route path="par" element={<PARManagementPage />} />
-                <Route path="par-list" element={<ParListPage />} />
+                <Route path="par" element={<ParListPage />} />
                 
                 <Route path="orders" element={<OrdersPage />} />
                 <Route path="reports" element={<ReportsPage />} />
