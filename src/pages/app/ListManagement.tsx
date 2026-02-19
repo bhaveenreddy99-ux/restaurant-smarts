@@ -759,6 +759,40 @@ export default function ListManagementPage() {
     openListDetail(selectedList);
   };
 
+  const handleSaveMyCategories = async () => {
+    if (!selectedList) return;
+    setSaveStatus("saving");
+    try {
+      const set = await getOrCreateCategorySet(selectedList.id, "user_manual");
+      const currentCats = listCategories.filter(c => c.category_set_id === set.id);
+      const currentMaps = itemCategoryMaps.filter(m => m.category_set_id === set.id);
+
+      // Build upsert payload for every catalog item in this list
+      const mappings = catalogItems.map((item, idx) => {
+        const existing = currentMaps.find(m => m.catalog_item_id === item.id);
+        return {
+          list_id: selectedList.id,
+          category_set_id: set.id,
+          catalog_item_id: item.id,
+          category_id: existing?.category_id || null,
+          item_sort_order: existing?.item_sort_order ?? idx,
+        };
+      });
+
+      if (mappings.length > 0) {
+        await supabase.from("list_item_category_map").upsert(mappings, { onConflict: "category_set_id,catalog_item_id" });
+      }
+
+      await updateActiveCategoryMode("my-categories");
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 2000);
+      toast.success("My categories saved");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to save");
+      setSaveStatus("idle");
+    }
+  };
+
   // ─── IMPORT ───────────────────────────────────
   const resetImport = () => {
     setImportStep("upload");
@@ -1296,6 +1330,9 @@ export default function ListManagementPage() {
                 />
                 <Button size="sm" variant="outline" className="h-8 text-xs gap-1" onClick={handleAddListCategory} disabled={!newListCategoryName.trim()}>
                   <Plus className="h-3 w-3" /> Create
+                </Button>
+                <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={handleSaveMyCategories} disabled={saveStatus === "saving"}>
+                  <Check className="h-3 w-3" /> {saveStatus === "saving" ? "Saving..." : "Save"}
                 </Button>
               </div>
             )}
