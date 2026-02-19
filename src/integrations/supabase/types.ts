@@ -284,6 +284,7 @@ export type Database = {
           id: string
           inventory_list_id: string | null
           item_name: string
+          list_category_id: string | null
           metadata: Json | null
           pack_size: string | null
           restaurant_id: string
@@ -301,6 +302,7 @@ export type Database = {
           id?: string
           inventory_list_id?: string | null
           item_name: string
+          list_category_id?: string | null
           metadata?: Json | null
           pack_size?: string | null
           restaurant_id: string
@@ -318,6 +320,7 @@ export type Database = {
           id?: string
           inventory_list_id?: string | null
           item_name?: string
+          list_category_id?: string | null
           metadata?: Json | null
           pack_size?: string | null
           restaurant_id?: string
@@ -333,6 +336,13 @@ export type Database = {
             columns: ["inventory_list_id"]
             isOneToOne: false
             referencedRelation: "inventory_lists"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "inventory_catalog_items_list_category_id_fkey"
+            columns: ["list_category_id"]
+            isOneToOne: false
+            referencedRelation: "list_categories"
             referencedColumns: ["id"]
           },
           {
@@ -658,6 +668,38 @@ export type Database = {
             columns: ["restaurant_id"]
             isOneToOne: true
             referencedRelation: "restaurants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      list_categories: {
+        Row: {
+          created_at: string
+          id: string
+          list_id: string
+          name: string
+          sort_order: number
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          list_id: string
+          name: string
+          sort_order?: number
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          list_id?: string
+          name?: string
+          sort_order?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "list_categories_list_id_fkey"
+            columns: ["list_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_lists"
             referencedColumns: ["id"]
           },
         ]
@@ -1688,6 +1730,10 @@ export type Database = {
         Returns: boolean
       }
       is_member_of: { Args: { r_id: string }; Returns: boolean }
+      list_category_restaurant_id: {
+        Args: { lc_list_id: string }
+        Returns: string
+      }
       order_restaurant_id: { Args: { o_id: string }; Returns: string }
       par_guide_restaurant_id: { Args: { pg_id: string }; Returns: string }
       purchase_history_restaurant_id: {
