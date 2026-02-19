@@ -24,12 +24,23 @@ import { toast } from "sonner";
 import {
   Plus, Send, Package, BookOpen, Play, ArrowLeft, Eye, CheckCircle,
   XCircle, ShoppingCart, Copy, Clock, ClipboardCheck, Trash2, ChevronRight, Eraser,
-  Search, SkipForward, EyeOff, Check, ListOrdered } from "lucide-react";
+  Search, SkipForward, EyeOff, Check, ListOrdered, AlertTriangle } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useCategoryMapping } from "@/hooks/useCategoryMapping";
 
 const defaultCategories = ["Frozen", "Cooler", "Dry"];
+
+// Risk classification helper
+function getRisk(currentStock: number, parLevel: number | null | undefined): { label: string; color: string; bgClass: string; textClass: string } {
+  if (parLevel === null || parLevel === undefined || parLevel <= 0) {
+    return { label: "No PAR", color: "gray", bgClass: "bg-muted/60", textClass: "text-muted-foreground" };
+  }
+  const ratio = currentStock / parLevel;
+  if (ratio >= 1.0) return { label: "Low", color: "green", bgClass: "bg-success/10", textClass: "text-success" };
+  if (ratio > 0.5) return { label: "Medium", color: "yellow", bgClass: "bg-warning/10", textClass: "text-warning" };
+  return { label: "High", color: "red", bgClass: "bg-destructive/10", textClass: "text-destructive" };
+}
 
 export default function EnterInventoryPage() {
   const { currentRestaurant } = useRestaurant();
@@ -80,6 +91,40 @@ export default function EnterInventoryPage() {
   const [submitConfirmOpen, setSubmitConfirmOpen] = useState(false);
   const [categoryMode, setCategoryMode] = useState<string>("list_order");
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  // Approved PAR data for read-only display during count entry
+  const [approvedParMap, setApprovedParMap] = useState<Record<string, number>>({});
+
+  // Load approved PAR values when session opens
+  useEffect(() => {
+    if (!activeSession || !currentRestaurant) { setApprovedParMap({}); return; }
+    const loadApprovedPar = async () => {
+      // Find approved sessions for this list to get latest PAR values
+      // Also load from par_guide_items for the list's par guides
+      const { data: guides } = await supabase
+        .from("par_guides")
+        .select("id")
+        .eq("restaurant_id", currentRestaurant.id)
+        .eq("inventory_list_id", activeSession.inventory_list_id);
+
+      if (!guides || guides.length === 0) { setApprovedParMap({}); return; }
+
+      // Get all par guide items from all guides for this list
+      const guideIds = guides.map(g => g.id);
+      const { data: allParItems } = await supabase
+        .from("par_guide_items")
+        .select("item_name, par_level, par_guide_id")
+        .in("par_guide_id", guideIds);
+
+      if (!allParItems || allParItems.length === 0) { setApprovedParMap({}); return; }
+
+      // Use the latest par guide's values (last guide as most recent)
+      const map: Record<string, number> = {};
+      allParItems.forEach(p => { map[p.item_name] = Number(p.par_level); });
+      setApprovedParMap(map);
+    };
+    loadApprovedPar();
+  }, [activeSession, currentRestaurant]);
 
   useEffect(() => {
     if (!currentRestaurant) return;
@@ -307,8 +352,41 @@ export default function EnterInventoryPage() {
   };
 
   const handleView = async (session: any) => {
+    // Load session items
     const { data } = await supabase.from("inventory_session_items").select("*").eq("session_id", session.id);
-    setViewItems(data || []);
+    
+    // If approved, load PAR guide values for risk display
+    if (session.status === "APPROVED" && currentRestaurant) {
+      const { data: guides } = await supabase
+        .from("par_guides")
+        .select("id")
+        .eq("restaurant_id", currentRestaurant.id)
+        .eq("inventory_list_id", session.inventory_list_id);
+      
+      if (guides && guides.length > 0) {
+        const guideIds = guides.map(g => g.id);
+        const { data: parData } = await supabase
+          .from("par_guide_items")
+          .select("item_name, par_level")
+          .in("par_guide_id", guideIds);
+        
+        if (parData) {
+          // Enrich items with approved PAR
+          const parMap: Record<string, number> = {};
+          parData.forEach(p => { parMap[p.item_name] = Number(p.par_level); });
+          
+          const enriched = (data || []).map(item => ({
+            ...item,
+            approved_par: parMap[item.item_name] ?? null,
+          }));
+          setViewItems(enriched);
+          setViewSession(session);
+          return;
+        }
+      }
+    }
+    
+    setViewItems((data || []).map(item => ({ ...item, approved_par: null })));
     setViewSession(session);
   };
 
@@ -507,7 +585,6 @@ export default function EnterInventoryPage() {
       const prev = getRef(currentIndex - 1, field);
       if (prev) prev.focus();
     } else if (e.key === "Tab") {
-      // Tab moves between stock and par in same row
       if (!e.shiftKey && field === "stock") {
         const parRef = inputRefs.current[`${filteredItems[currentIndex]?.id}_par`];
         if (parRef) { e.preventDefault(); parRef.focus(); }
@@ -516,6 +593,12 @@ export default function EnterInventoryPage() {
         if (stockRef) { e.preventDefault(); stockRef.focus(); }
       }
     }
+  };
+
+  // Helper to get approved PAR for an item
+  const getApprovedPar = (itemName: string): number | null => {
+    const val = approvedParMap[itemName];
+    return val !== undefined ? val : null;
   };
 
   if (loading && lists.length === 0) {
@@ -690,6 +773,7 @@ export default function EnterInventoryPage() {
                 <div className="space-y-2">
                   {catItems.map((item, idx) => {
                     const globalIdx = filteredItems.indexOf(item);
+                    const approvedPar = getApprovedPar(item.item_name);
                     return (
                       <Card key={item.id} className="border shadow-sm">
                         <CardContent className="p-3 space-y-2">
@@ -722,6 +806,12 @@ export default function EnterInventoryPage() {
                                 className="h-12 text-lg font-mono text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                               />
                             </div>
+                            <div className="shrink-0 text-center">
+                              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">PAR</label>
+                              <p className="h-12 flex items-center justify-center text-lg font-mono text-muted-foreground">
+                                {approvedPar !== null ? approvedPar : "—"}
+                              </p>
+                            </div>
                           </div>
                         </CardContent>
                       </Card>
@@ -743,32 +833,39 @@ export default function EnterInventoryPage() {
                   <TableHead className="text-xs font-semibold">Unit</TableHead>
                   <TableHead className="text-xs font-semibold">Pack Size</TableHead>
                   <TableHead className="text-xs font-semibold">Current Stock</TableHead>
+                  <TableHead className="text-xs font-semibold text-muted-foreground">PAR Level</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredItems.map((item, idx) =>
-                  <TableRow key={item.id} className="hover:bg-muted/20 transition-colors">
-                    <TableCell className="font-medium text-sm">{item.item_name}</TableCell>
-                    <TableCell><Badge variant="secondary" className="text-[10px] font-normal">{getItemCategory(item)}</Badge></TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{item.unit}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
-                    <TableCell>
-                      <Input
-                        ref={el => { inputRefs.current[item.id] = el; }}
-                        type="number"
-                        inputMode="decimal"
-                        min={0}
-                        max={100}
-                        step={0.01}
-                        value={item.current_stock}
-                        onChange={(e) => handleUpdateStock(item.id, parseFloat(e.target.value) || 0)}
-                        onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
-                        onKeyDown={(e) => handleKeyDown(e, idx, "stock")}
-                        className="w-20 h-8 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                      />
-                    </TableCell>
-                  </TableRow>
-                )}
+                {filteredItems.map((item, idx) => {
+                  const approvedPar = getApprovedPar(item.item_name);
+                  return (
+                    <TableRow key={item.id} className="hover:bg-muted/20 transition-colors">
+                      <TableCell className="font-medium text-sm">{item.item_name}</TableCell>
+                      <TableCell><Badge variant="secondary" className="text-[10px] font-normal">{getItemCategory(item)}</Badge></TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{item.unit}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
+                      <TableCell>
+                        <Input
+                          ref={el => { inputRefs.current[item.id] = el; }}
+                          type="number"
+                          inputMode="decimal"
+                          min={0}
+                          max={100}
+                          step={0.01}
+                          value={item.current_stock}
+                          onChange={(e) => handleUpdateStock(item.id, parseFloat(e.target.value) || 0)}
+                          onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
+                          onKeyDown={(e) => handleKeyDown(e, idx, "stock")}
+                          className="w-20 h-8 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        />
+                      </TableCell>
+                      <TableCell className="font-mono text-sm text-muted-foreground">
+                        {approvedPar !== null ? approvedPar : <span className="text-muted-foreground/50 text-xs">—</span>}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </Card>
@@ -953,6 +1050,15 @@ export default function EnterInventoryPage() {
     );
   };
 
+  // Compute risk summary for view dialog (approved sessions)
+  const viewRiskSummary = viewItems && viewSession?.status === "APPROVED"
+    ? viewItems.reduce((acc, item) => {
+        const risk = getRisk(Number(item.current_stock), item.approved_par);
+        acc[risk.color] = (acc[risk.color] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>)
+    : null;
+
   return (
     <div className="space-y-6 animate-fade-in">
       <Breadcrumb>
@@ -1104,29 +1210,89 @@ export default function EnterInventoryPage() {
         </DialogContent>
       </Dialog>
 
-      {/* View Session Dialog */}
+      {/* View Session Dialog — enhanced with risk colors for approved sessions */}
       <Dialog open={!!viewItems} onOpenChange={() => { setViewItems(null); setViewSession(null); }}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader><DialogTitle>{viewSession?.name} — Items</DialogTitle></DialogHeader>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {viewSession?.name} — Items
+              {viewSession?.status === "APPROVED" && (
+                <Badge className="bg-success/10 text-success border-0 text-[10px]">Approved</Badge>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+
+          {/* Risk summary cards for approved sessions */}
+          {viewRiskSummary && (
+            <div className="grid grid-cols-4 gap-2 mb-2">
+              <div className="rounded-lg bg-destructive/10 p-3 text-center">
+                <p className="text-lg font-bold text-destructive">{viewRiskSummary.red || 0}</p>
+                <p className="text-[10px] font-medium text-destructive uppercase tracking-wide">High Risk</p>
+              </div>
+              <div className="rounded-lg bg-warning/10 p-3 text-center">
+                <p className="text-lg font-bold text-warning">{viewRiskSummary.yellow || 0}</p>
+                <p className="text-[10px] font-medium text-warning uppercase tracking-wide">Medium</p>
+              </div>
+              <div className="rounded-lg bg-success/10 p-3 text-center">
+                <p className="text-lg font-bold text-success">{viewRiskSummary.green || 0}</p>
+                <p className="text-[10px] font-medium text-success uppercase tracking-wide">Low Risk</p>
+              </div>
+              <div className="rounded-lg bg-muted/60 p-3 text-center">
+                <p className="text-lg font-bold text-muted-foreground">{viewRiskSummary.gray || 0}</p>
+                <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">No PAR</p>
+              </div>
+            </div>
+          )}
+
           <div className="rounded-lg border overflow-hidden">
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted/30">
                   <TableHead className="text-xs font-semibold">Item</TableHead>
                   <TableHead className="text-xs font-semibold">Category</TableHead>
-                  <TableHead className="text-xs font-semibold">Pack Size</TableHead>
                   <TableHead className="text-xs font-semibold">Stock</TableHead>
+                  {viewSession?.status === "APPROVED" && (
+                    <>
+                      <TableHead className="text-xs font-semibold">PAR</TableHead>
+                      <TableHead className="text-xs font-semibold">Risk</TableHead>
+                      <TableHead className="text-xs font-semibold">Suggested Order</TableHead>
+                    </>
+                  )}
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {viewItems?.map((item) =>
-                  <TableRow key={item.id}>
-                    <TableCell className="text-sm">{item.item_name}</TableCell>
-                    <TableCell><Badge variant="secondary" className="text-[10px] font-normal">{item.category}</Badge></TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
-                    <TableCell className="font-mono text-sm">{item.current_stock}</TableCell>
-                  </TableRow>
-                )}
+                {viewItems?.map((item) => {
+                  const isApproved = viewSession?.status === "APPROVED";
+                  const risk = isApproved ? getRisk(Number(item.current_stock), item.approved_par) : null;
+                  const suggestedOrder = isApproved && item.approved_par != null && item.approved_par > 0
+                    ? Math.max(0, item.approved_par - Number(item.current_stock))
+                    : null;
+
+                  return (
+                    <TableRow key={item.id} className={isApproved && risk ? `${risk.bgClass}` : ""}>
+                      <TableCell className="text-sm font-medium">{item.item_name}</TableCell>
+                      <TableCell><Badge variant="secondary" className="text-[10px] font-normal">{item.category}</Badge></TableCell>
+                      <TableCell className="font-mono text-sm">{item.current_stock}</TableCell>
+                      {isApproved && (
+                        <>
+                          <TableCell className="font-mono text-sm text-muted-foreground">
+                            {item.approved_par !== null ? item.approved_par : "—"}
+                          </TableCell>
+                          <TableCell>
+                            {risk && (
+                              <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px]`}>
+                                {risk.label}
+                              </Badge>
+                            )}
+                          </TableCell>
+                          <TableCell className="font-mono text-sm">
+                            {suggestedOrder !== null ? suggestedOrder.toFixed(1) : "—"}
+                          </TableCell>
+                        </>
+                      )}
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </div>
