@@ -26,6 +26,7 @@ import {
   XCircle, ShoppingCart, Copy, Clock, ClipboardCheck, Trash2, ChevronRight, Eraser,
   Search, SkipForward, EyeOff, Check } from "lucide-react";
 import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
+import { useCategoryMapping } from "@/hooks/useCategoryMapping";
 
 const defaultCategories = ["Frozen", "Cooler", "Dry"];
 
@@ -393,24 +394,69 @@ export default function EnterInventoryPage() {
 
   const isManagerOrOwner = currentRestaurant?.role === "OWNER" || currentRestaurant?.role === "MANAGER";
 
+  const { categories: mappedCategories, itemCategoryMap, hasMappings } = useCategoryMapping(
+    activeSession?.inventory_list_id || selectedList || null
+  );
+
+  const getItemCategory = (item: any): string => {
+    if (hasMappings && itemCategoryMap[item.item_name]) {
+      return itemCategoryMap[item.item_name].category_name;
+    }
+    return item.category || "Uncategorized";
+  };
+
+  const getItemSortOrder = (item: any): number => {
+    if (hasMappings && itemCategoryMap[item.item_name]) {
+      return itemCategoryMap[item.item_name].item_sort_order;
+    }
+    return 0;
+  };
+
   const filteredItems = items.filter((i) => {
-    if (filterCategory !== "all" && i.category !== filterCategory) return false;
+    const cat = getItemCategory(i);
+    if (filterCategory !== "all" && cat !== filterCategory) return false;
     if (search && !i.item_name.toLowerCase().includes(search.toLowerCase())) return false;
     if (showOnlyEmpty && Number(i.current_stock) > 0) return false;
     return true;
   });
-  const categories = [...new Set(items.map((i) => i.category).filter(Boolean))];
-  const allCategories = [...defaultCategories, ...categories.filter((c) => !defaultCategories.includes(c))];
+
+  // Sort by mapped order when mappings exist
+  if (hasMappings) {
+    filteredItems.sort((a, b) => {
+      const catA = getItemCategory(a);
+      const catB = getItemCategory(b);
+      const catSortA = mappedCategories.find(c => c.name === catA)?.sort_order ?? 999;
+      const catSortB = mappedCategories.find(c => c.name === catB)?.sort_order ?? 999;
+      if (catSortA !== catSortB) return catSortA - catSortB;
+      return getItemSortOrder(a) - getItemSortOrder(b);
+    });
+  }
+
+  const categories = hasMappings
+    ? mappedCategories.map(c => c.name)
+    : [...new Set(items.map((i) => i.category).filter(Boolean))];
+  const allCategories = hasMappings
+    ? categories
+    : [...defaultCategories, ...categories.filter((c) => !defaultCategories.includes(c))];
 
   const selectedListName = lists.find((l) => l.id === selectedList)?.name || "";
 
   // Group items by category for card view
   const groupedItems = filteredItems.reduce<Record<string, any[]>>((acc, item) => {
-    const cat = item.category || "Uncategorized";
+    const cat = getItemCategory(item);
     if (!acc[cat]) acc[cat] = [];
     acc[cat].push(item);
     return acc;
   }, {});
+
+  // Sort grouped category keys by mapped sort_order
+  const sortedCategoryKeys = hasMappings
+    ? Object.keys(groupedItems).sort((a, b) => {
+        const sortA = mappedCategories.find(c => c.name === a)?.sort_order ?? 999;
+        const sortB = mappedCategories.find(c => c.name === b)?.sort_order ?? 999;
+        return sortA - sortB;
+      })
+    : Object.keys(groupedItems);
 
   const jumpToNextEmpty = () => {
     const emptyItem = filteredItems.find(i => !i.current_stock || Number(i.current_stock) === 0);
@@ -577,7 +623,9 @@ export default function EnterInventoryPage() {
         ) : isCompact ? (
           /* ─── CARD LAYOUT (tablet/mobile) ─── */
           <div className="space-y-5 mt-4">
-            {Object.entries(groupedItems).map(([category, catItems]) => (
+            {sortedCategoryKeys.map((category) => {
+              const catItems = groupedItems[category];
+              return (
               <div key={category}>
                 <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 mb-2 px-1">{category}</p>
                 <div className="space-y-2">
@@ -625,7 +673,8 @@ export default function EnterInventoryPage() {
                   })}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           /* ─── TABLE LAYOUT (desktop) ─── */
@@ -645,7 +694,7 @@ export default function EnterInventoryPage() {
                 {filteredItems.map((item, idx) =>
                   <TableRow key={item.id} className="hover:bg-muted/20 transition-colors">
                     <TableCell className="font-medium text-sm">{item.item_name}</TableCell>
-                    <TableCell><Badge variant="secondary" className="text-[10px] font-normal">{item.category}</Badge></TableCell>
+                    <TableCell><Badge variant="secondary" className="text-[10px] font-normal">{getItemCategory(item)}</Badge></TableCell>
                     <TableCell className="text-xs text-muted-foreground">{item.unit}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
                     <TableCell>
