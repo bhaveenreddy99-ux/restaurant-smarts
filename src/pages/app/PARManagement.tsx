@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { Plus, BookOpen, Trash2, Save, Check, Search } from "lucide-react";
 import { ExportButtons } from "@/components/ExportButtons";
 import { useIsCompact } from "@/hooks/use-mobile";
+import { useCategoryMapping } from "@/hooks/useCategoryMapping";
 
 export default function PARManagementPage() {
   const { currentRestaurant } = useRestaurant();
@@ -148,19 +149,61 @@ export default function PARManagementPage() {
 
   const isManagerOrOwner = currentRestaurant?.role === "OWNER" || currentRestaurant?.role === "MANAGER";
 
-  const categories = [...new Set(items.map(i => i.category).filter(Boolean))];
+  const { categories: mappedCategories, itemCategoryMap, hasMappings } = useCategoryMapping(selectedList);
+
+  // Derive category for each item: use mapping if available, else raw item.category
+  const getItemCategory = (item: any): string => {
+    if (hasMappings && itemCategoryMap[item.item_name]) {
+      return itemCategoryMap[item.item_name].category_name;
+    }
+    return item.category || "Uncategorized";
+  };
+
+  const getItemSortOrder = (item: any): number => {
+    if (hasMappings && itemCategoryMap[item.item_name]) {
+      return itemCategoryMap[item.item_name].item_sort_order;
+    }
+    return 0;
+  };
+
+  const categories = hasMappings
+    ? mappedCategories.map(c => c.name)
+    : [...new Set(items.map(i => i.category).filter(Boolean))];
+
   const filteredItems = items.filter(i => {
-    if (filterCategory !== "all" && i.category !== filterCategory) return false;
+    const cat = getItemCategory(i);
+    if (filterCategory !== "all" && cat !== filterCategory) return false;
     if (search && !i.item_name.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
 
+  // Sort filtered items by mapped sort order when mappings exist
+  if (hasMappings) {
+    filteredItems.sort((a, b) => {
+      const catA = getItemCategory(a);
+      const catB = getItemCategory(b);
+      const catSortA = mappedCategories.find(c => c.name === catA)?.sort_order ?? 999;
+      const catSortB = mappedCategories.find(c => c.name === catB)?.sort_order ?? 999;
+      if (catSortA !== catSortB) return catSortA - catSortB;
+      return getItemSortOrder(a) - getItemSortOrder(b);
+    });
+  }
+
   const groupedItems = filteredItems.reduce<Record<string, any[]>>((acc, item) => {
-    const cat = item.category || "Uncategorized";
+    const cat = getItemCategory(item);
     if (!acc[cat]) acc[cat] = [];
     acc[cat].push(item);
     return acc;
   }, {});
+
+  // Sort grouped category keys by mapped sort_order
+  const sortedCategoryKeys = hasMappings
+    ? Object.keys(groupedItems).sort((a, b) => {
+        const sortA = mappedCategories.find(c => c.name === a)?.sort_order ?? 999;
+        const sortB = mappedCategories.find(c => c.name === b)?.sort_order ?? 999;
+        return sortA - sortB;
+      })
+    : Object.keys(groupedItems);
 
   if (loading) {
     return (
@@ -318,7 +361,9 @@ export default function PARManagementPage() {
           {isCompact ? (
             /* ─── CARD LAYOUT (tablet/mobile) ─── */
             <div className="space-y-5">
-              {Object.entries(groupedItems).map(([category, catItems]) => (
+              {sortedCategoryKeys.map((category) => {
+                const catItems = groupedItems[category];
+                return (
                 <div key={category}>
                   <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 mb-2 px-1">{category}</p>
                   <div className="space-y-2">
@@ -372,7 +417,8 @@ export default function PARManagementPage() {
                     })}
                   </div>
                 </div>
-              ))}
+                );
+              })}
               {filteredItems.length === 0 && (
                 <Card>
                   <CardContent className="text-center text-muted-foreground py-8 text-sm">
@@ -399,7 +445,7 @@ export default function PARManagementPage() {
                   {filteredItems.map((i, idx) => (
                     <TableRow key={i.id} className="hover:bg-muted/30 transition-colors">
                       <TableCell className="font-medium text-sm">{i.item_name}</TableCell>
-                      <TableCell><Badge variant="secondary" className="text-[10px] font-normal">{i.category}</Badge></TableCell>
+                      <TableCell><Badge variant="secondary" className="text-[10px] font-normal">{getItemCategory(i)}</Badge></TableCell>
                       <TableCell className="text-xs text-muted-foreground">{i.unit}</TableCell>
                       <TableCell className="text-xs text-muted-foreground">{i.pack_size || "—"}</TableCell>
                       <TableCell>
