@@ -442,31 +442,101 @@ export default function ListManagementPage() {
   const handleDragEnd = async (result: DropResult) => {
     if (!result.destination) return;
     const { source, destination } = result;
+    const itemId = result.draggableId;
 
-    // If moving between categories in my-categories or custom-categories mode
-    if ((viewMode === "my-categories" || viewMode === "custom-categories") && source.droppableId !== destination.droppableId) {
-      const itemId = result.draggableId;
-      const targetCat = listCategories.find(c => c.name === destination.droppableId);
-      const newCategoryId = destination.droppableId === "Uncategorized" ? null : (targetCat?.id || null);
-      setSaveStatus("saving");
-      await supabase.from("inventory_catalog_items").update({ list_category_id: newCategoryId }).eq("id", itemId);
+    if (viewMode === "my-categories" || viewMode === "custom-categories") {
+      // Build grouped items (same logic as getGroupedItems for my-categories)
+      const grouped = getGroupedItems();
+      const sourceCatName = source.droppableId;
+      const destCatName = destination.droppableId;
+
+      // Get the items in source and destination groups
+      const sourceItems = [...(grouped[sourceCatName] || [])];
+      const destItems = sourceCatName === destCatName ? sourceItems : [...(grouped[destCatName] || [])];
+
+      // Remove from source
+      const [movedItem] = sourceItems.splice(source.index, 1);
+      if (!movedItem) return;
+
+      // Determine target category id
+      const targetCat = listCategories.find(c => c.name === destCatName);
+      const newCategoryId = destCatName === "Uncategorized" ? null : (targetCat?.id || null);
+
+      if (sourceCatName === destCatName) {
+        // Within-category reorder
+        sourceItems.splice(destination.index, 0, movedItem);
+        // Optimistic update
+        const updatedItems = catalogItems.map(ci => {
+          const idx = sourceItems.findIndex(si => si.id === ci.id);
+          if (idx !== -1) return { ...ci, sort_order: idx };
+          return ci;
+        });
+        setCatalogItems(updatedItems);
+        setSaveStatus("saving");
+        const updates = sourceItems.map((item, i) =>
+          (async () => { await supabase.from("inventory_catalog_items").update({ sort_order: i }).eq("id", item.id); })()
+        );
+        await Promise.all(updates);
+      } else {
+        // Cross-category move
+        destItems.splice(destination.index, 0, { ...movedItem, list_category_id: newCategoryId } as CatalogItem);
+        // Optimistic update
+        const updatedItems = catalogItems.map(ci => {
+          if (ci.id === movedItem.id) {
+            return { ...ci, list_category_id: newCategoryId, sort_order: destination.index };
+          }
+          // Update sort_order in destination category
+          const destIdx = destItems.findIndex(di => di.id === ci.id);
+          if (destIdx !== -1) return { ...ci, sort_order: destIdx };
+          // Update sort_order in source category (item removed)
+          const srcIdx = sourceItems.findIndex(si => si.id === ci.id);
+          if (srcIdx !== -1) return { ...ci, sort_order: srcIdx };
+          return ci;
+        });
+        setCatalogItems(updatedItems);
+        setSaveStatus("saving");
+        // Save category assignment + sort orders
+        const updates: Promise<any>[] = [
+          (async () => { await supabase.from("inventory_catalog_items").update({ list_category_id: newCategoryId, sort_order: destination.index }).eq("id", movedItem.id); })(),
+        ];
+        // Re-sort remaining source items
+        sourceItems.forEach((item, i) => {
+          updates.push((async () => { await supabase.from("inventory_catalog_items").update({ sort_order: i }).eq("id", item.id); })());
+        });
+        // Re-sort destination items
+        destItems.forEach((item, i) => {
+          if (item.id !== movedItem.id) {
+            updates.push((async () => { await supabase.from("inventory_catalog_items").update({ sort_order: i }).eq("id", item.id); })());
+          }
+        });
+        await Promise.all(updates);
+      }
       setSaveStatus("saved");
+      toast.success("Saved");
       setTimeout(() => setSaveStatus("idle"), 2000);
-      openListDetail(selectedList);
       return;
     }
 
+    // Default list-order reorder
     const filtered = getFilteredItems();
     const reordered = Array.from(filtered);
     const [moved] = reordered.splice(source.index, 1);
     reordered.splice(destination.index, 0, moved);
+    // Optimistic
+    const updatedItems = catalogItems.map(ci => {
+      const idx = reordered.findIndex(ri => ri.id === ci.id);
+      if (idx !== -1) return { ...ci, sort_order: idx };
+      return ci;
+    });
+    setCatalogItems(updatedItems);
     setSaveStatus("saving");
-    for (let i = 0; i < reordered.length; i++) {
-      await supabase.from("inventory_catalog_items").update({ sort_order: i }).eq("id", reordered[i].id);
-    }
+    const updates2 = reordered.map((item, i) =>
+      (async () => { await supabase.from("inventory_catalog_items").update({ sort_order: i }).eq("id", item.id); })()
+    );
+    await Promise.all(updates2);
     setSaveStatus("saved");
+    toast.success("Saved");
     setTimeout(() => setSaveStatus("idle"), 2000);
-    openListDetail(selectedList);
   };
 
   // ─── BULK OPERATIONS ─────────────────────────
@@ -489,18 +559,35 @@ export default function ListManagementPage() {
 
   const handleBulkMove = async () => {
     if (!selectedList || selectedItems.size === 0) return;
+    const targetCatId = bulkMoveTarget === "__uncategorized" ? null : bulkMoveTarget;
+    // Find existing items in target category to determine starting sort_order
+    const existingInTarget = catalogItems.filter(i => {
+      if (targetCatId === null) return !i.list_category_id;
+      return i.list_category_id === targetCatId;
+    }).filter(i => !selectedItems.has(i.id));
+    let nextOrder = existingInTarget.length > 0 ? Math.max(...existingInTarget.map(i => i.sort_order || 0)) + 1 : 0;
+    // Optimistic update
+    const updatedItems = catalogItems.map(ci => {
+      if (selectedItems.has(ci.id)) {
+        return { ...ci, list_category_id: targetCatId, sort_order: nextOrder++ };
+      }
+      return ci;
+    });
+    setCatalogItems(updatedItems);
     setSaveStatus("saving");
-    const targetCat = bulkMoveTarget === "__uncategorized" ? null : bulkMoveTarget;
-    for (const id of selectedItems) {
-      await supabase.from("inventory_catalog_items").update({ list_category_id: targetCat }).eq("id", id);
-    }
+    // Reset nextOrder for DB writes
+    nextOrder = existingInTarget.length > 0 ? Math.max(...existingInTarget.map(i => i.sort_order || 0)) + 1 : 0;
+    const updates = Array.from(selectedItems).map(id => {
+      const order = nextOrder++;
+      return (async () => { await supabase.from("inventory_catalog_items").update({ list_category_id: targetCatId, sort_order: order }).eq("id", id); })();
+    });
+    await Promise.all(updates);
     setSaveStatus("saved");
+    toast.success(`Moved ${selectedItems.size} items`);
     setTimeout(() => setSaveStatus("idle"), 2000);
     setSelectedItems(new Set());
     setBulkMoveOpen(false);
     setBulkMoveTarget("");
-    toast.success(`Moved ${selectedItems.size} items`);
-    openListDetail(selectedList);
   };
 
   const handleSaveAICategories = async () => {
@@ -759,19 +846,22 @@ export default function ListManagementPage() {
     }
 
     if (viewMode === "my-categories") {
-      const groups: Record<string, CatalogItem[]> = {};
-      const uncategorized: CatalogItem[] = [];
-      items.forEach(item => {
-        const cat = listCategories.find(c => c.id === item.list_category_id);
-        if (cat) {
-          if (!groups[cat.name]) groups[cat.name] = [];
-          groups[cat.name].push(item);
-        } else {
-          uncategorized.push(item);
-        }
-      });
-      if (uncategorized.length > 0) groups["Uncategorized"] = uncategorized;
-      return Object.keys(groups).length ? groups : { "All Items": items };
+      const result: Record<string, CatalogItem[]> = {};
+      // Uncategorized first
+      const uncategorized = items.filter(i => !i.list_category_id).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+      result["Uncategorized"] = uncategorized;
+      // Then each list category in sort_order
+      const sortedCats = [...listCategories].sort((a, b) => a.sort_order - b.sort_order);
+      for (const cat of sortedCats) {
+        const catItems = items.filter(i => i.list_category_id === cat.id).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        result[cat.name] = catItems;
+      }
+      // Remove empty groups except Uncategorized (always show it)
+      const filtered: Record<string, CatalogItem[]> = {};
+      for (const [key, val] of Object.entries(result)) {
+        if (val.length > 0 || key === "Uncategorized") filtered[key] = val;
+      }
+      return Object.keys(filtered).length ? filtered : { "Uncategorized": [] };
     }
 
     if (viewMode === "recently-purchased") {
