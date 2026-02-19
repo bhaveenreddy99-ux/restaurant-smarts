@@ -287,6 +287,7 @@ export type Database = {
           metadata: Json | null
           pack_size: string | null
           restaurant_id: string
+          sort_order: number
           unit: string | null
           updated_at: string
           vendor_name: string | null
@@ -303,6 +304,7 @@ export type Database = {
           metadata?: Json | null
           pack_size?: string | null
           restaurant_id: string
+          sort_order?: number
           unit?: string | null
           updated_at?: string
           vendor_name?: string | null
@@ -319,6 +321,7 @@ export type Database = {
           metadata?: Json | null
           pack_size?: string | null
           restaurant_id?: string
+          sort_order?: number
           unit?: string | null
           updated_at?: string
           vendor_name?: string | null
