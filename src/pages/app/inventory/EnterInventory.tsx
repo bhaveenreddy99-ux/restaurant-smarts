@@ -24,7 +24,7 @@ import { toast } from "sonner";
 import {
   Plus, Send, Package, BookOpen, Play, ArrowLeft, Eye, CheckCircle,
   XCircle, ShoppingCart, Copy, Clock, ClipboardCheck, Trash2, ChevronRight, Eraser,
-  Search, SkipForward, EyeOff, Check, ListOrdered, ChevronUp, ChevronDown } from "lucide-react";
+  Search, SkipForward, EyeOff, Check, ListOrdered } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useCategoryMapping } from "@/hooks/useCategoryMapping";
@@ -722,22 +722,6 @@ export default function EnterInventoryPage() {
                                 className="h-12 text-lg font-mono text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                               />
                             </div>
-                            <div className="text-center shrink-0">
-                              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">PAR</label>
-                              <Input
-                                ref={el => { inputRefs.current[`${item.id}_par`] = el; }}
-                                inputMode="decimal"
-                                type="number"
-                                min={0}
-                                max={100}
-                                step={0.01}
-                                value={item.par_level || ""}
-                                onChange={(e) => handleUpdatePar(item.id, parseFloat(e.target.value) || 0)}
-                                onBlur={() => handleSavePar(item.id, Number(item.par_level))}
-                                onKeyDown={(e) => handleKeyDown(e, globalIdx, "par")}
-                                className="h-12 text-lg font-mono text-center w-20 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                              />
-                            </div>
                           </div>
                         </CardContent>
                       </Card>
@@ -759,7 +743,6 @@ export default function EnterInventoryPage() {
                   <TableHead className="text-xs font-semibold">Unit</TableHead>
                   <TableHead className="text-xs font-semibold">Pack Size</TableHead>
                   <TableHead className="text-xs font-semibold">Current Stock</TableHead>
-                  <TableHead className="text-xs font-semibold">PAR Level</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -770,62 +753,19 @@ export default function EnterInventoryPage() {
                     <TableCell className="text-xs text-muted-foreground">{item.unit}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
                     <TableCell>
-                      <div className="flex items-center gap-1">
-                        <Input
-                          ref={el => { inputRefs.current[item.id] = el; }}
-                          type="number"
-                          inputMode="decimal"
-                          min={0}
-                          max={100}
-                          step={0.01}
-                          value={item.current_stock}
-                          onChange={(e) => handleUpdateStock(item.id, parseFloat(e.target.value) || 0)}
-                          onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
-                          onKeyDown={(e) => handleKeyDown(e, idx, "stock")}
-                          className="w-20 h-8 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                        />
-                        <div className="flex flex-col">
-                          <button
-                            type="button"
-                            className="h-4 w-5 flex items-center justify-center rounded-sm hover:bg-muted text-muted-foreground"
-                            onClick={() => { const v = Math.min(100, Number(item.current_stock) + 0.1); handleUpdateStock(item.id, Math.round(v * 100) / 100); handleSaveStock(item.id, Math.round(v * 100) / 100); }}
-                          ><ChevronUp className="h-3 w-3" /></button>
-                          <button
-                            type="button"
-                            className="h-4 w-5 flex items-center justify-center rounded-sm hover:bg-muted text-muted-foreground"
-                            onClick={() => { const v = Math.max(0, Number(item.current_stock) - 0.1); handleUpdateStock(item.id, Math.round(v * 100) / 100); handleSaveStock(item.id, Math.round(v * 100) / 100); }}
-                          ><ChevronDown className="h-3 w-3" /></button>
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1">
-                        <Input
-                          ref={el => { inputRefs.current[`${item.id}_par`] = el; }}
-                          type="number"
-                          inputMode="decimal"
-                          min={0}
-                          max={100}
-                          step={0.01}
-                          value={item.par_level}
-                          onChange={(e) => handleUpdatePar(item.id, parseFloat(e.target.value) || 0)}
-                          onBlur={() => handleSavePar(item.id, Number(item.par_level))}
-                          onKeyDown={(e) => handleKeyDown(e, idx, "par")}
-                          className="w-20 h-8 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                        />
-                        <div className="flex flex-col">
-                          <button
-                            type="button"
-                            className="h-4 w-5 flex items-center justify-center rounded-sm hover:bg-muted text-muted-foreground"
-                            onClick={() => { const v = Math.min(100, Number(item.par_level) + 0.1); handleUpdatePar(item.id, Math.round(v * 100) / 100); handleSavePar(item.id, Math.round(v * 100) / 100); }}
-                          ><ChevronUp className="h-3 w-3" /></button>
-                          <button
-                            type="button"
-                            className="h-4 w-5 flex items-center justify-center rounded-sm hover:bg-muted text-muted-foreground"
-                            onClick={() => { const v = Math.max(0, Number(item.par_level) - 0.1); handleUpdatePar(item.id, Math.round(v * 100) / 100); handleSavePar(item.id, Math.round(v * 100) / 100); }}
-                          ><ChevronDown className="h-3 w-3" /></button>
-                        </div>
-                      </div>
+                      <Input
+                        ref={el => { inputRefs.current[item.id] = el; }}
+                        type="number"
+                        inputMode="decimal"
+                        min={0}
+                        max={100}
+                        step={0.01}
+                        value={item.current_stock}
+                        onChange={(e) => handleUpdateStock(item.id, parseFloat(e.target.value) || 0)}
+                        onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
+                        onKeyDown={(e) => handleKeyDown(e, idx, "stock")}
+                        className="w-20 h-8 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      />
                     </TableCell>
                   </TableRow>
                 )}
@@ -1176,7 +1116,6 @@ export default function EnterInventoryPage() {
                   <TableHead className="text-xs font-semibold">Category</TableHead>
                   <TableHead className="text-xs font-semibold">Pack Size</TableHead>
                   <TableHead className="text-xs font-semibold">Stock</TableHead>
-                  <TableHead className="text-xs font-semibold">PAR</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -1186,7 +1125,6 @@ export default function EnterInventoryPage() {
                     <TableCell><Badge variant="secondary" className="text-[10px] font-normal">{item.category}</Badge></TableCell>
                     <TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
                     <TableCell className="font-mono text-sm">{item.current_stock}</TableCell>
-                    <TableCell className="font-mono text-sm text-muted-foreground">{item.par_level}</TableCell>
                   </TableRow>
                 )}
               </TableBody>
