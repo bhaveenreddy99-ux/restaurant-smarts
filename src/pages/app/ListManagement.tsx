@@ -27,12 +27,14 @@ import {
 } from "@/components/ui/breadcrumb";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
 import {
   Plus, Upload, Download, MoreVertical, Pencil, Trash2,
   Search, ArrowLeft, AlertTriangle, ShoppingCart, ChevronRight,
   GripVertical, Copy, LayoutList, FolderPlus, Check, X,
-  Package, FolderOpen, ClipboardList,
+  Package, FolderOpen, ClipboardList, Menu, Sparkles, User, Clock,
+  ChevronDown, MoveRight,
 } from "lucide-react";
 import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
 import { exportToCSV, exportToExcel, exportToPDF, parseFile } from "@/lib/export-utils";
@@ -68,6 +70,26 @@ interface IssueItem {
   reasons: string[];
 }
 
+type ViewMode = "list-order" | "ai-categories" | "user-categories" | "recently-purchased";
+
+const AI_CATEGORY_MAP: Record<string, string[]> = {
+  "Proteins": ["chicken", "beef", "pork", "fish", "salmon", "shrimp", "turkey", "lamb", "steak", "sausage", "bacon", "meat"],
+  "Produce": ["lettuce", "tomato", "onion", "pepper", "carrot", "potato", "lime", "lemon", "garlic", "celery", "cucumber", "avocado", "mushroom", "herb", "basil", "cilantro", "parsley"],
+  "Dairy": ["milk", "cream", "cheese", "butter", "yogurt", "egg", "sour cream"],
+  "Frozen": ["frozen", "ice cream", "fries", "ice"],
+  "Beverages": ["juice", "soda", "water", "vodka", "rum", "gin", "tequila", "wine", "beer", "whiskey", "bourbon", "cocktail", "coffee", "tea"],
+  "Dry Goods": ["oil", "flour", "sugar", "rice", "pasta", "bread", "buns", "salt", "spice", "seasoning", "sauce", "vinegar", "mustard", "ketchup"],
+  "Bakery": ["bread", "roll", "bun", "cake", "pie", "pastry", "muffin", "tortilla"],
+};
+
+function getAICategory(itemName: string): string {
+  const lower = itemName.toLowerCase();
+  for (const [cat, keywords] of Object.entries(AI_CATEGORY_MAP)) {
+    if (keywords.some(k => lower.includes(k))) return cat;
+  }
+  return "Other";
+}
+
 // ─── COMPONENT ──────────────────────────────────
 export default function ListManagementPage() {
   const { currentRestaurant } = useRestaurant();
@@ -88,9 +110,16 @@ export default function ListManagementPage() {
   const [selectedList, setSelectedList] = useState<any>(null);
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
   const [detailSearch, setDetailSearch] = useState("");
-  const [detailCategory, setDetailCategory] = useState("all");
   const [activeTab, setActiveTab] = useState("items");
   const [reorderMode, setReorderMode] = useState(false);
+
+  // ── View mode
+  const [viewMode, setViewMode] = useState<ViewMode>("list-order");
+
+  // ── Bulk select
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
+  const [bulkMoveTarget, setBulkMoveTarget] = useState("");
 
   // ── Inline edit
   const [editingItem, setEditingItem] = useState<string | null>(null);
@@ -128,6 +157,9 @@ export default function ListManagementPage() {
   // ── Purchase History
   const [purchaseHistory, setPurchaseHistory] = useState<any[]>([]);
   const [phItems, setPhItems] = useState<Record<string, any[]>>({});
+
+  // ── Recently purchased items (for view mode)
+  const [recentPurchasedItems, setRecentPurchasedItems] = useState<any[]>([]);
 
   // ── Auto-save
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "idle">("idle");
@@ -261,9 +293,10 @@ export default function ListManagementPage() {
   const openListDetail = useCallback(async (list: any) => {
     setSelectedList(list);
     setDetailSearch("");
-    setDetailCategory("all");
     setActiveTab("items");
     setEditingItem(null);
+    setViewMode("list-order");
+    setSelectedItems(new Set());
     const { data } = await supabase
       .from("inventory_catalog_items")
       .select("*")
@@ -290,6 +323,35 @@ export default function ListManagementPage() {
       }
       setPhItems(itemMap);
     }
+    // Fetch all recent purchase items for "recently purchased" view
+    const { data: allPh } = await supabase
+      .from("purchase_history")
+      .select("id, created_at, vendor_name")
+      .eq("restaurant_id", restaurantId!)
+      .order("created_at", { ascending: false })
+      .limit(20);
+    if (allPh?.length) {
+      const allPhItems: any[] = [];
+      for (const p of allPh) {
+        const { data: items } = await supabase.from("purchase_history_items").select("*").eq("purchase_history_id", p.id);
+        if (items) {
+          items.forEach(item => {
+            allPhItems.push({ ...item, purchase_date: p.created_at, vendor_name: p.vendor_name });
+          });
+        }
+      }
+      // Deduplicate by item name, keep most recent
+      const seen = new Map<string, any>();
+      allPhItems.forEach(item => {
+        const key = (item.item_name || "").toLowerCase().trim();
+        if (!seen.has(key) || new Date(item.purchase_date) > new Date(seen.get(key).purchase_date)) {
+          seen.set(key, item);
+        }
+      });
+      setRecentPurchasedItems(Array.from(seen.values()));
+    } else {
+      setRecentPurchasedItems([]);
+    }
   }, [restaurantId]);
 
   // ─── ISSUES COMPUTATION ───────────────────────
@@ -300,7 +362,7 @@ export default function ListManagementPage() {
       nameMap[norm] = (nameMap[norm] || 0) + 1;
     });
     const result: IssueItem[] = [];
-    items.forEach((item, idx) => {
+    items.forEach((item) => {
       const reasons: string[] = [];
       if (!item.unit) reasons.push("Missing Unit");
       if (!item.pack_size) reasons.push("Missing Pack Size");
@@ -359,17 +421,79 @@ export default function ListManagementPage() {
   // ─── DRAG & DROP ──────────────────────────────
   const handleDragEnd = async (result: DropResult) => {
     if (!result.destination) return;
+    const { source, destination } = result;
+
+    // If moving between categories in user-categories mode
+    if (viewMode === "user-categories" && source.droppableId !== destination.droppableId) {
+      const newCategory = destination.droppableId === "Uncategorized" ? null : destination.droppableId;
+      const itemId = result.draggableId;
+      setSaveStatus("saving");
+      await supabase.from("inventory_catalog_items").update({ category: newCategory }).eq("id", itemId);
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus("idle"), 2000);
+      openListDetail(selectedList);
+      return;
+    }
+
     const filtered = getFilteredItems();
     const reordered = Array.from(filtered);
-    const [moved] = reordered.splice(result.source.index, 1);
-    reordered.splice(result.destination.index, 0, moved);
-    // Update sort_order
+    const [moved] = reordered.splice(source.index, 1);
+    reordered.splice(destination.index, 0, moved);
     setSaveStatus("saving");
     for (let i = 0; i < reordered.length; i++) {
       await supabase.from("inventory_catalog_items").update({ sort_order: i }).eq("id", reordered[i].id);
     }
     setSaveStatus("saved");
     setTimeout(() => setSaveStatus("idle"), 2000);
+    openListDetail(selectedList);
+  };
+
+  // ─── BULK OPERATIONS ─────────────────────────
+  const toggleSelectItem = (id: string) => {
+    setSelectedItems(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    const filtered = getFilteredItems();
+    if (selectedItems.size === filtered.length) {
+      setSelectedItems(new Set());
+    } else {
+      setSelectedItems(new Set(filtered.map(i => i.id)));
+    }
+  };
+
+  const handleBulkMove = async () => {
+    if (!selectedList || selectedItems.size === 0) return;
+    setSaveStatus("saving");
+    const newCat = bulkMoveTarget === "__uncategorized" ? null : bulkMoveTarget;
+    for (const id of selectedItems) {
+      await supabase.from("inventory_catalog_items").update({ category: newCat }).eq("id", id);
+    }
+    setSaveStatus("saved");
+    setTimeout(() => setSaveStatus("idle"), 2000);
+    setSelectedItems(new Set());
+    setBulkMoveOpen(false);
+    setBulkMoveTarget("");
+    toast.success(`Moved ${selectedItems.size} items`);
+    openListDetail(selectedList);
+  };
+
+  const handleSaveAICategories = async () => {
+    if (!selectedList) return;
+    setSaveStatus("saving");
+    for (const item of catalogItems) {
+      const aiCat = getAICategory(item.item_name);
+      if (aiCat !== (item.category || "Other")) {
+        await supabase.from("inventory_catalog_items").update({ category: aiCat === "Other" ? null : aiCat }).eq("id", item.id);
+      }
+    }
+    setSaveStatus("saved");
+    setTimeout(() => setSaveStatus("idle"), 2000);
+    toast.success("AI categories saved to items");
     openListDetail(selectedList);
   };
 
@@ -394,7 +518,6 @@ export default function ListManagementPage() {
       if (rows.length === 0) { toast.error("No data found"); return; }
       setImportData(rows);
       setImportHeaders(headers);
-      // Auto-detect mapping
       const autoMap: Record<string, string> = {};
       const synonyms: Record<string, string[]> = {
         item_name: ["item", "itemname", "name", "product", "productname", "description"],
@@ -411,7 +534,6 @@ export default function ListManagementPage() {
           }
         }
       }
-      // Check for saved template
       if (restaurantId) {
         const { data: templates } = await supabase
           .from("import_templates")
@@ -492,7 +614,6 @@ export default function ListManagementPage() {
       });
       if (!error) created++;
     }
-    // Save mapping template
     const templateName = `Template ${new Date().toLocaleDateString()}`;
     await supabase.from("import_templates").insert({
       restaurant_id: restaurantId,
@@ -505,7 +626,6 @@ export default function ListManagementPage() {
     setImportOpen(false);
     resetImport();
     fetchLists();
-    // If we're in detail view for this list, refresh
     if (selectedList?.id === targetListId) openListDetail(selectedList);
   };
 
@@ -515,8 +635,6 @@ export default function ListManagementPage() {
   const handleAddCategory = () => {
     if (!newCategoryName.trim()) return;
     if (categories.includes(newCategoryName.trim())) { toast.error("Category already exists"); return; }
-    // We don't need to save to DB - categories are derived from items
-    // Just set a toast and the user can assign items to this category
     toast.success(`Category "${newCategoryName.trim()}" ready. Assign items to use it.`);
     setNewCategoryName("");
   };
@@ -569,35 +687,86 @@ export default function ListManagementPage() {
   // ─── FILTERED / GROUPED ITEMS ─────────────────
   const getFilteredItems = useCallback(() => {
     return catalogItems.filter(i => {
-      if (detailCategory !== "all" && (i.category || "") !== detailCategory) return false;
       if (detailSearch && !i.item_name.toLowerCase().includes(detailSearch.toLowerCase())) return false;
       return true;
     });
-  }, [catalogItems, detailCategory, detailSearch]);
+  }, [catalogItems, detailSearch]);
 
   const filteredItems = getFilteredItems();
 
-  const getGroupedItems = () => {
-    if (detailCategory !== "all") return { [detailCategory]: filteredItems };
-    const groups: Record<string, CatalogItem[]> = {};
-    const uncategorized: CatalogItem[] = [];
-    filteredItems.forEach(item => {
-      if (item.category) {
-        if (!groups[item.category]) groups[item.category] = [];
-        groups[item.category].push(item);
-      } else {
-        uncategorized.push(item);
-      }
-    });
-    if (uncategorized.length > 0) groups["Uncategorized"] = uncategorized;
-    if (Object.keys(groups).length === 0) return { "All Items": filteredItems };
-    return groups;
+  const getGroupedItems = (): Record<string, CatalogItem[]> => {
+    const items = filteredItems;
+
+    if (viewMode === "list-order") {
+      return { "All Items": items };
+    }
+
+    if (viewMode === "ai-categories") {
+      const groups: Record<string, CatalogItem[]> = {};
+      items.forEach(item => {
+        const cat = getAICategory(item.item_name);
+        if (!groups[cat]) groups[cat] = [];
+        groups[cat].push(item);
+      });
+      return Object.keys(groups).length ? groups : { "All Items": items };
+    }
+
+    if (viewMode === "user-categories") {
+      const groups: Record<string, CatalogItem[]> = {};
+      const uncategorized: CatalogItem[] = [];
+      items.forEach(item => {
+        if (item.category) {
+          if (!groups[item.category]) groups[item.category] = [];
+          groups[item.category].push(item);
+        } else {
+          uncategorized.push(item);
+        }
+      });
+      if (uncategorized.length > 0) groups["Uncategorized"] = uncategorized;
+      return Object.keys(groups).length ? groups : { "All Items": items };
+    }
+
+    if (viewMode === "recently-purchased") {
+      // Match catalog items to recent purchases
+      const matched: CatalogItem[] = [];
+      const unmatched: CatalogItem[] = [];
+      items.forEach(item => {
+        const match = recentPurchasedItems.find(rp => {
+          if (item.vendor_sku && rp.vendor_sku) {
+            return item.vendor_sku.toLowerCase().trim() === (rp.vendor_sku || "").toLowerCase().trim();
+          }
+          return item.item_name.toLowerCase().trim() === (rp.item_name || "").toLowerCase().trim();
+        });
+        if (match) matched.push(item);
+        else unmatched.push(item);
+      });
+      const groups: Record<string, CatalogItem[]> = {};
+      if (matched.length) groups["Recently Purchased"] = matched;
+      if (unmatched.length) groups["Not Recently Purchased"] = unmatched;
+      return Object.keys(groups).length ? groups : { "All Items": items };
+    }
+
+    return { "All Items": items };
   };
 
   // ─── SORTED LISTS FOR GRID ────────────────────
   const sortedLists = [...lists]
     .filter(l => !gridSearch || l.name.toLowerCase().includes(gridSearch.toLowerCase()))
     .sort((a, b) => gridSort === "name" ? a.name.localeCompare(b.name) : new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+  // ─── VIEW MODE LABEL ──────────────────────────
+  const viewModeLabel: Record<ViewMode, string> = {
+    "list-order": "List Order",
+    "ai-categories": "Custom Categories (AI)",
+    "user-categories": "User Categories",
+    "recently-purchased": "Recently Purchased",
+  };
+  const viewModeIcon: Record<ViewMode, React.ReactNode> = {
+    "list-order": <LayoutList className="h-3.5 w-3.5" />,
+    "ai-categories": <Sparkles className="h-3.5 w-3.5" />,
+    "user-categories": <User className="h-3.5 w-3.5" />,
+    "recently-purchased": <Clock className="h-3.5 w-3.5" />,
+  };
 
   // ─── LOADING STATE ────────────────────────────
   if (!currentRestaurant) {
@@ -626,6 +795,11 @@ export default function ListManagementPage() {
   // ═══════════════════════════════════════════════
   if (selectedList) {
     const grouped = getGroupedItems();
+    const allCategories = [...categories];
+    // Include AI categories if in AI mode
+    if (viewMode === "ai-categories") {
+      Object.keys(grouped).forEach(k => { if (!allCategories.includes(k)) allCategories.push(k); });
+    }
 
     return (
       <div className="space-y-5 animate-fade-in">
@@ -729,13 +903,37 @@ export default function ListManagementPage() {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input value={detailSearch} onChange={e => setDetailSearch(e.target.value)} placeholder="Search items..." className="pl-9 h-9" />
               </div>
-              <Select value={detailCategory} onValueChange={setDetailCategory}>
-                <SelectTrigger className="w-44 h-9"><SelectValue placeholder="All categories" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All categories</SelectItem>
-                  {categories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-                </SelectContent>
-              </Select>
+
+              {/* 3-Line View Mode Menu */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="gap-2 h-9">
+                    <Menu className="h-3.5 w-3.5" />
+                    {viewModeLabel[viewMode]}
+                    <ChevronDown className="h-3 w-3 opacity-50" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-56">
+                  <DropdownMenuItem onClick={() => { setViewMode("list-order"); setSelectedItems(new Set()); }} className="gap-2">
+                    <LayoutList className="h-4 w-4" /> List Order
+                    {viewMode === "list-order" && <Check className="h-3.5 w-3.5 ml-auto" />}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => { setViewMode("ai-categories"); setSelectedItems(new Set()); }} className="gap-2">
+                    <Sparkles className="h-4 w-4" /> Custom Categories (AI)
+                    {viewMode === "ai-categories" && <Check className="h-3.5 w-3.5 ml-auto" />}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => { setViewMode("user-categories"); setSelectedItems(new Set()); }} className="gap-2">
+                    <User className="h-4 w-4" /> User Categories
+                    {viewMode === "user-categories" && <Check className="h-3.5 w-3.5 ml-auto" />}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => { setViewMode("recently-purchased"); setSelectedItems(new Set()); }} className="gap-2">
+                    <Clock className="h-4 w-4" /> Recently Purchased
+                    {viewMode === "recently-purchased" && <Check className="h-3.5 w-3.5 ml-auto" />}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+
               <Dialog open={addItemOpen} onOpenChange={setAddItemOpen}>
                 <DialogTrigger asChild>
                   <Button size="sm" className="bg-gradient-amber gap-1.5"><Plus className="h-3.5 w-3.5" /> Add Item</Button>
@@ -766,7 +964,48 @@ export default function ListManagementPage() {
               </Dialog>
             </div>
 
-            {/* Items Table with Categories */}
+            {/* Bulk action bar */}
+            {selectedItems.size > 0 && (
+              <div className="flex items-center gap-3 p-3 rounded-lg border bg-muted/30">
+                <Badge variant="secondary" className="text-xs">{selectedItems.size} selected</Badge>
+                <Dialog open={bulkMoveOpen} onOpenChange={setBulkMoveOpen}>
+                  <DialogTrigger asChild>
+                    <Button size="sm" variant="outline" className="gap-1.5 h-8 text-xs">
+                      <MoveRight className="h-3.5 w-3.5" /> Move to category
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-sm">
+                    <DialogHeader><DialogTitle>Move {selectedItems.size} items</DialogTitle></DialogHeader>
+                    <div className="space-y-3">
+                      <Select value={bulkMoveTarget} onValueChange={setBulkMoveTarget}>
+                        <SelectTrigger className="h-9"><SelectValue placeholder="Select category..." /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__uncategorized">Uncategorized</SelectItem>
+                          {categories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                      <Button onClick={handleBulkMove} className="w-full bg-gradient-amber" disabled={!bulkMoveTarget}>Move Items</Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+                <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setSelectedItems(new Set())}>
+                  <X className="h-3.5 w-3.5 mr-1" /> Clear
+                </Button>
+              </div>
+            )}
+
+            {/* AI Categories: Save button */}
+            {viewMode === "ai-categories" && (
+              <div className="flex items-center gap-3 p-3 rounded-lg border border-primary/20 bg-primary/5">
+                <Sparkles className="h-4 w-4 text-primary" />
+                <p className="text-xs text-muted-foreground flex-1">AI-generated categories based on item names. Click "Save categories" to persist.</p>
+                <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={handleSaveAICategories}>
+                  <Check className="h-3 w-3" /> Save categories
+                </Button>
+              </div>
+            )}
+
+            {/* Items Table with Groups */}
             <DragDropContext onDragEnd={handleDragEnd}>
               {filteredItems.length === 0 ? (
                 <Card>
@@ -788,6 +1027,21 @@ export default function ListManagementPage() {
                       <Table>
                         <TableHeader>
                           <TableRow className="bg-muted/30">
+                            {(viewMode === "user-categories" || viewMode === "ai-categories") && (
+                              <TableHead className="w-10">
+                                <Checkbox
+                                  checked={catItems.every(i => selectedItems.has(i.id))}
+                                  onCheckedChange={() => {
+                                    const allSelected = catItems.every(i => selectedItems.has(i.id));
+                                    setSelectedItems(prev => {
+                                      const next = new Set(prev);
+                                      catItems.forEach(i => allSelected ? next.delete(i.id) : next.add(i.id));
+                                      return next;
+                                    });
+                                  }}
+                                />
+                              </TableHead>
+                            )}
                             {reorderMode && <TableHead className="w-10"></TableHead>}
                             <TableHead className="text-xs font-semibold w-12">Sr#</TableHead>
                             <TableHead className="text-xs font-semibold">Item Name</TableHead>
@@ -802,15 +1056,16 @@ export default function ListManagementPage() {
                           {(provided) => (
                             <TableBody ref={provided.innerRef} {...provided.droppableProps}>
                               {catItems.map((item, idx) => (
-                                <Draggable key={item.id} draggableId={item.id} index={idx} isDragDisabled={!reorderMode}>
+                                <Draggable key={item.id} draggableId={item.id} index={idx} isDragDisabled={!reorderMode && viewMode !== "user-categories"}>
                                   {(dragProvided, snapshot) => (
                                     <TableRow
                                       ref={dragProvided.innerRef}
                                       {...dragProvided.draggableProps}
-                                      className={`hover:bg-muted/20 transition-colors ${snapshot.isDragging ? "bg-accent shadow-md" : ""}`}
+                                      className={`hover:bg-muted/20 transition-colors ${snapshot.isDragging ? "bg-accent shadow-md" : ""} ${selectedItems.has(item.id) ? "bg-primary/5" : ""}`}
                                     >
                                       {editingItem === item.id ? (
                                         <>
+                                          {(viewMode === "user-categories" || viewMode === "ai-categories") && <TableCell />}
                                           {reorderMode && <TableCell><div {...dragProvided.dragHandleProps}><GripVertical className="h-4 w-4 text-muted-foreground" /></div></TableCell>}
                                           <TableCell className="text-xs text-muted-foreground">{idx + 1}</TableCell>
                                           <TableCell><Input className="h-8 text-sm" value={editValues.item_name} onChange={e => setEditValues({ ...editValues, item_name: e.target.value })} /></TableCell>
@@ -827,7 +1082,18 @@ export default function ListManagementPage() {
                                         </>
                                       ) : (
                                         <>
+                                          {(viewMode === "user-categories" || viewMode === "ai-categories") && (
+                                            <TableCell>
+                                              <Checkbox
+                                                checked={selectedItems.has(item.id)}
+                                                onCheckedChange={() => toggleSelectItem(item.id)}
+                                              />
+                                            </TableCell>
+                                          )}
                                           {reorderMode && <TableCell><div {...dragProvided.dragHandleProps} className="cursor-grab active:cursor-grabbing"><GripVertical className="h-4 w-4 text-muted-foreground" /></div></TableCell>}
+                                          {(viewMode === "user-categories" && !reorderMode) && (
+                                            <TableCell className="w-6"><div {...dragProvided.dragHandleProps} className="cursor-grab active:cursor-grabbing"><GripVertical className="h-4 w-4 text-muted-foreground/40 hover:text-muted-foreground" /></div></TableCell>
+                                          )}
                                           <TableCell className="text-xs text-muted-foreground font-mono">{idx + 1}</TableCell>
                                           <TableCell className="font-medium text-sm">{item.item_name}</TableCell>
                                           <TableCell className="text-xs text-muted-foreground">{item.unit || <span className="text-destructive/60">—</span>}</TableCell>
@@ -1057,7 +1323,6 @@ export default function ListManagementPage() {
           {importStep === "upload" && (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">Upload a CSV or Excel file with your inventory items.</p>
-              {/* Target list selection */}
               <div className="space-y-2">
                 <Label className="text-xs">Import into</Label>
                 <Select value={importTargetList} onValueChange={setImportTargetList}>
@@ -1102,7 +1367,6 @@ export default function ListManagementPage() {
 
           {importStep === "preview" && (
             <div className="space-y-4">
-              {/* Import Summary */}
               {importSummary && (
                 <div className="grid grid-cols-3 gap-3">
                   <div className="rounded-lg border p-3 text-center">
