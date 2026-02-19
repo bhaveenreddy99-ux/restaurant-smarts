@@ -24,7 +24,8 @@ import { toast } from "sonner";
 import {
   Plus, Send, Package, BookOpen, Play, ArrowLeft, Eye, CheckCircle,
   XCircle, ShoppingCart, Copy, Clock, ClipboardCheck, Trash2, ChevronRight, Eraser,
-  Search, SkipForward, EyeOff, Check } from "lucide-react";
+  Search, SkipForward, EyeOff, Check, ListOrdered, ChevronUp, ChevronDown } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useCategoryMapping } from "@/hooks/useCategoryMapping";
 
@@ -77,6 +78,7 @@ export default function EnterInventoryPage() {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [savedId, setSavedId] = useState<string | null>(null);
   const [submitConfirmOpen, setSubmitConfirmOpen] = useState(false);
+  const [categoryMode, setCategoryMode] = useState<string>("list_order");
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   useEffect(() => {
@@ -228,8 +230,25 @@ export default function EnterInventoryPage() {
   };
 
   const handleUpdateStock = async (id: string, stock: number) => {
-    setItems(items.map((i) => i.id === id ? { ...i, current_stock: stock } : i));
+    const clamped = Math.min(100, Math.max(0, stock));
+    setItems(items.map((i) => i.id === id ? { ...i, current_stock: clamped } : i));
   };
+
+  const handleUpdatePar = async (id: string, par: number) => {
+    const clamped = Math.min(100, Math.max(0, par));
+    setItems(items.map((i) => i.id === id ? { ...i, par_level: clamped } : i));
+  };
+
+  const handleSavePar = useCallback(async (id: string, par: number) => {
+    setSavingId(id);
+    const { error } = await supabase.from("inventory_session_items").update({ par_level: par }).eq("id", id);
+    setSavingId(null);
+    if (error) toast.error("Could not save PAR");
+    else {
+      setSavedId(id);
+      setTimeout(() => setSavedId(prev => prev === id ? null : prev), 1500);
+    }
+  }, []);
 
   const handleSaveStock = useCallback(async (id: string, stock: number) => {
     setSavingId(id);
@@ -396,8 +415,14 @@ export default function EnterInventoryPage() {
 
   const isManagerOrOwner = currentRestaurant?.role === "OWNER" || currentRestaurant?.role === "MANAGER";
 
+  const mappingMode = categoryMode === "list_order" ? "list_order"
+    : categoryMode === "custom-categories" ? "custom-categories"
+    : categoryMode === "my-categories" ? "my-categories"
+    : null;
+
   const { categories: mappedCategories, itemCategoryMap, hasMappings } = useCategoryMapping(
-    activeSession?.inventory_list_id || selectedList || null
+    activeSession?.inventory_list_id || selectedList || null,
+    mappingMode === "list_order" ? "list_order" : mappingMode
   );
 
   const getItemCategory = (item: any): string => {
@@ -470,12 +495,25 @@ export default function EnterInventoryPage() {
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent, currentIndex: number) => {
-    if (e.key === "Enter") {
+  const handleKeyDown = (e: React.KeyboardEvent, currentIndex: number, field: "stock" | "par" = "stock") => {
+    const getRef = (idx: number, f: string) => inputRefs.current[`${filteredItems[idx]?.id}_${f}`] || inputRefs.current[filteredItems[idx]?.id];
+
+    if (e.key === "Enter" || e.key === "ArrowDown") {
       e.preventDefault();
-      const nextItem = filteredItems[currentIndex + 1];
-      if (nextItem && inputRefs.current[nextItem.id]) {
-        inputRefs.current[nextItem.id]?.focus();
+      const next = getRef(currentIndex + 1, field);
+      if (next) next.focus();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      const prev = getRef(currentIndex - 1, field);
+      if (prev) prev.focus();
+    } else if (e.key === "Tab") {
+      // Tab moves between stock and par in same row
+      if (!e.shiftKey && field === "stock") {
+        const parRef = inputRefs.current[`${filteredItems[currentIndex]?.id}_par`];
+        if (parRef) { e.preventDefault(); parRef.focus(); }
+      } else if (e.shiftKey && field === "par") {
+        const stockRef = inputRefs.current[filteredItems[currentIndex]?.id];
+        if (stockRef) { e.preventDefault(); stockRef.focus(); }
       }
     }
   };
@@ -519,6 +557,25 @@ export default function EnterInventoryPage() {
               </div>
             </div>
             <Badge className="bg-warning/10 text-warning border-0 text-[10px] shrink-0">In progress</Badge>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs shrink-0">
+                  <ListOrdered className="h-3.5 w-3.5" />
+                  {categoryMode === "list_order" ? "List Order" : categoryMode === "custom-categories" ? "Custom Categories" : "My Categories"}
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => { setCategoryMode("list_order"); setFilterCategory("all"); }}>
+                  List Order (no categories)
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { setCategoryMode("custom-categories"); setFilterCategory("all"); }}>
+                  Custom Categories (AI)
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { setCategoryMode("my-categories"); setFilterCategory("all"); }}>
+                  My Categories (User)
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
 
           {/* Search + filters */}
@@ -653,21 +710,34 @@ export default function EnterInventoryPage() {
                               <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Count</label>
                               <Input
                                 ref={el => { inputRefs.current[item.id] = el; }}
-                                inputMode="numeric"
-                                pattern="[0-9]*"
+                                inputMode="decimal"
+                                type="number"
+                                min={0}
+                                max={100}
+                                step={0.01}
                                 value={item.current_stock || ""}
-                                onChange={(e) => handleUpdateStock(item.id, +e.target.value)}
+                                onChange={(e) => handleUpdateStock(item.id, parseFloat(e.target.value) || 0)}
                                 onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
-                                onKeyDown={(e) => handleKeyDown(e, globalIdx)}
+                                onKeyDown={(e) => handleKeyDown(e, globalIdx, "stock")}
                                 className="h-12 text-lg font-mono text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                               />
                             </div>
-                            {item.par_level > 0 && (
-                              <div className="text-center shrink-0">
-                                <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">PAR</label>
-                                <p className="text-lg font-mono text-muted-foreground">{item.par_level}</p>
-                              </div>
-                            )}
+                            <div className="text-center shrink-0">
+                              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">PAR</label>
+                              <Input
+                                ref={el => { inputRefs.current[`${item.id}_par`] = el; }}
+                                inputMode="decimal"
+                                type="number"
+                                min={0}
+                                max={100}
+                                step={0.01}
+                                value={item.par_level || ""}
+                                onChange={(e) => handleUpdatePar(item.id, parseFloat(e.target.value) || 0)}
+                                onBlur={() => handleSavePar(item.id, Number(item.par_level))}
+                                onKeyDown={(e) => handleKeyDown(e, globalIdx, "par")}
+                                className="h-12 text-lg font-mono text-center w-20 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                              />
+                            </div>
                           </div>
                         </CardContent>
                       </Card>
@@ -700,18 +770,63 @@ export default function EnterInventoryPage() {
                     <TableCell className="text-xs text-muted-foreground">{item.unit}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
                     <TableCell>
-                      <Input
-                        ref={el => { inputRefs.current[item.id] = el; }}
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        value={item.current_stock}
-                        onChange={(e) => handleUpdateStock(item.id, +e.target.value)}
-                        onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
-                        onKeyDown={(e) => handleKeyDown(e, idx)}
-                        className="w-20 h-8 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                      />
+                      <div className="flex items-center gap-1">
+                        <Input
+                          ref={el => { inputRefs.current[item.id] = el; }}
+                          type="number"
+                          inputMode="decimal"
+                          min={0}
+                          max={100}
+                          step={0.01}
+                          value={item.current_stock}
+                          onChange={(e) => handleUpdateStock(item.id, parseFloat(e.target.value) || 0)}
+                          onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
+                          onKeyDown={(e) => handleKeyDown(e, idx, "stock")}
+                          className="w-20 h-8 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        />
+                        <div className="flex flex-col">
+                          <button
+                            type="button"
+                            className="h-4 w-5 flex items-center justify-center rounded-sm hover:bg-muted text-muted-foreground"
+                            onClick={() => { const v = Math.min(100, Number(item.current_stock) + 0.1); handleUpdateStock(item.id, Math.round(v * 100) / 100); handleSaveStock(item.id, Math.round(v * 100) / 100); }}
+                          ><ChevronUp className="h-3 w-3" /></button>
+                          <button
+                            type="button"
+                            className="h-4 w-5 flex items-center justify-center rounded-sm hover:bg-muted text-muted-foreground"
+                            onClick={() => { const v = Math.max(0, Number(item.current_stock) - 0.1); handleUpdateStock(item.id, Math.round(v * 100) / 100); handleSaveStock(item.id, Math.round(v * 100) / 100); }}
+                          ><ChevronDown className="h-3 w-3" /></button>
+                        </div>
+                      </div>
                     </TableCell>
-                    <TableCell className="text-sm font-mono text-muted-foreground">{item.par_level}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <Input
+                          ref={el => { inputRefs.current[`${item.id}_par`] = el; }}
+                          type="number"
+                          inputMode="decimal"
+                          min={0}
+                          max={100}
+                          step={0.01}
+                          value={item.par_level}
+                          onChange={(e) => handleUpdatePar(item.id, parseFloat(e.target.value) || 0)}
+                          onBlur={() => handleSavePar(item.id, Number(item.par_level))}
+                          onKeyDown={(e) => handleKeyDown(e, idx, "par")}
+                          className="w-20 h-8 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        />
+                        <div className="flex flex-col">
+                          <button
+                            type="button"
+                            className="h-4 w-5 flex items-center justify-center rounded-sm hover:bg-muted text-muted-foreground"
+                            onClick={() => { const v = Math.min(100, Number(item.par_level) + 0.1); handleUpdatePar(item.id, Math.round(v * 100) / 100); handleSavePar(item.id, Math.round(v * 100) / 100); }}
+                          ><ChevronUp className="h-3 w-3" /></button>
+                          <button
+                            type="button"
+                            className="h-4 w-5 flex items-center justify-center rounded-sm hover:bg-muted text-muted-foreground"
+                            onClick={() => { const v = Math.max(0, Number(item.par_level) - 0.1); handleUpdatePar(item.id, Math.round(v * 100) / 100); handleSavePar(item.id, Math.round(v * 100) / 100); }}
+                          ><ChevronDown className="h-3 w-3" /></button>
+                        </div>
+                      </div>
+                    </TableCell>
                   </TableRow>
                 )}
               </TableBody>

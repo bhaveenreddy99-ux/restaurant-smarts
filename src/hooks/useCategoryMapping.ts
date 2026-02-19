@@ -26,7 +26,7 @@ interface UseCategoryMappingResult {
  * Returns mapped categories + a lookup from item_name → mapped category info.
  * Falls back gracefully (hasMappings=false) when no mapping exists.
  */
-export function useCategoryMapping(listId: string | null | undefined): UseCategoryMappingResult {
+export function useCategoryMapping(listId: string | null | undefined, modeOverride?: string | null): UseCategoryMappingResult {
   const [categories, setCategories] = useState<MappedCategory[]>([]);
   const [itemCategoryMap, setItemCategoryMap] = useState<Record<string, ItemCategoryEntry>>({});
   const [hasMappings, setHasMappings] = useState(false);
@@ -53,7 +53,7 @@ export function useCategoryMapping(listId: string | null | undefined): UseCatego
 
       if (cancelled) return;
 
-      const mode = listData?.active_category_mode;
+      const mode = modeOverride !== undefined ? modeOverride : listData?.active_category_mode;
       // Map mode to set_type
       const setType = mode === "my-categories" ? "user_manual"
         : mode === "custom-categories" ? "custom_ai"
@@ -138,7 +138,7 @@ export function useCategoryMapping(listId: string | null | undefined): UseCatego
 
     load();
     return () => { cancelled = true; };
-  }, [listId]);
+  }, [listId, modeOverride]);
 
   return { categories, itemCategoryMap, hasMappings, loading };
 }
