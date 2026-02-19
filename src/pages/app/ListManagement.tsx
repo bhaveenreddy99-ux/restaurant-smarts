@@ -57,6 +57,7 @@ interface CatalogItem {
   sort_order: number;
   created_at: string;
   updated_at: string;
+  list_category_id: string | null;
 }
 
 interface IssueItem {
@@ -70,7 +71,14 @@ interface IssueItem {
   reasons: string[];
 }
 
-type ViewMode = "list-order" | "ai-categories" | "user-categories" | "recently-purchased";
+type ViewMode = "list-order" | "custom-categories" | "my-categories" | "recently-purchased";
+
+interface ListCategory {
+  id: string;
+  list_id: string;
+  name: string;
+  sort_order: number;
+}
 
 const AI_CATEGORY_MAP: Record<string, string[]> = {
   "Proteins": ["chicken", "beef", "pork", "fish", "salmon", "shrimp", "turkey", "lamb", "steak", "sausage", "bacon", "meat"],
@@ -79,7 +87,8 @@ const AI_CATEGORY_MAP: Record<string, string[]> = {
   "Frozen": ["frozen", "ice cream", "fries", "ice"],
   "Beverages": ["juice", "soda", "water", "vodka", "rum", "gin", "tequila", "wine", "beer", "whiskey", "bourbon", "cocktail", "coffee", "tea"],
   "Dry Goods": ["oil", "flour", "sugar", "rice", "pasta", "bread", "buns", "salt", "spice", "seasoning", "sauce", "vinegar", "mustard", "ketchup"],
-  "Bakery": ["bread", "roll", "bun", "cake", "pie", "pastry", "muffin", "tortilla"],
+  "Cleaning": ["soap", "sanitizer", "bleach", "cleaner", "detergent", "wipe", "sponge", "trash", "glove"],
+  "Paper/Disposable": ["napkin", "paper", "cup", "plate", "foil", "wrap", "bag", "container", "lid", "straw", "towel"],
 };
 
 function getAICategory(itemName: string): string {
@@ -116,6 +125,10 @@ export default function ListManagementPage() {
   // ── View mode
   const [viewMode, setViewMode] = useState<ViewMode>("list-order");
 
+  // ── List categories (per-list, NOT global)
+  const [listCategories, setListCategories] = useState<ListCategory[]>([]);
+  const [newListCategoryName, setNewListCategoryName] = useState("");
+
   // ── Bulk select
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
@@ -149,7 +162,7 @@ export default function ListManagementPage() {
 
   // ── Category manager
   const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
-  const [newCategoryName, setNewCategoryName] = useState("");
+  
 
   // ── Issues
   const [issues, setIssues] = useState<IssueItem[]>([]);
@@ -306,6 +319,14 @@ export default function ListManagementPage() {
       setCatalogItems(data as CatalogItem[]);
       computeIssues(data as CatalogItem[]);
     }
+    // Fetch list-specific categories
+    const { data: cats } = await supabase
+      .from("list_categories")
+      .select("*")
+      .eq("list_id", list.id)
+      .order("sort_order", { ascending: true });
+    setListCategories((cats || []) as ListCategory[]);
+
     // Fetch purchase history for this list
     const { data: ph } = await supabase
       .from("purchase_history")
@@ -340,7 +361,6 @@ export default function ListManagementPage() {
           });
         }
       }
-      // Deduplicate by item name, keep most recent
       const seen = new Map<string, any>();
       allPhItems.forEach(item => {
         const key = (item.item_name || "").toLowerCase().trim();
@@ -423,12 +443,13 @@ export default function ListManagementPage() {
     if (!result.destination) return;
     const { source, destination } = result;
 
-    // If moving between categories in user-categories mode
-    if (viewMode === "user-categories" && source.droppableId !== destination.droppableId) {
-      const newCategory = destination.droppableId === "Uncategorized" ? null : destination.droppableId;
+    // If moving between categories in my-categories or custom-categories mode
+    if ((viewMode === "my-categories" || viewMode === "custom-categories") && source.droppableId !== destination.droppableId) {
       const itemId = result.draggableId;
+      const targetCat = listCategories.find(c => c.name === destination.droppableId);
+      const newCategoryId = destination.droppableId === "Uncategorized" ? null : (targetCat?.id || null);
       setSaveStatus("saving");
-      await supabase.from("inventory_catalog_items").update({ category: newCategory }).eq("id", itemId);
+      await supabase.from("inventory_catalog_items").update({ list_category_id: newCategoryId }).eq("id", itemId);
       setSaveStatus("saved");
       setTimeout(() => setSaveStatus("idle"), 2000);
       openListDetail(selectedList);
@@ -469,9 +490,9 @@ export default function ListManagementPage() {
   const handleBulkMove = async () => {
     if (!selectedList || selectedItems.size === 0) return;
     setSaveStatus("saving");
-    const newCat = bulkMoveTarget === "__uncategorized" ? null : bulkMoveTarget;
+    const targetCat = bulkMoveTarget === "__uncategorized" ? null : bulkMoveTarget;
     for (const id of selectedItems) {
-      await supabase.from("inventory_catalog_items").update({ category: newCat }).eq("id", id);
+      await supabase.from("inventory_catalog_items").update({ list_category_id: targetCat }).eq("id", id);
     }
     setSaveStatus("saved");
     setTimeout(() => setSaveStatus("idle"), 2000);
@@ -485,15 +506,39 @@ export default function ListManagementPage() {
   const handleSaveAICategories = async () => {
     if (!selectedList) return;
     setSaveStatus("saving");
+    // Create list_categories from AI groupings
+    const aiGroups = new Set<string>();
+    catalogItems.forEach(item => {
+      const cat = getAICategory(item.item_name);
+      if (cat !== "Other") aiGroups.add(cat);
+    });
+    // Delete existing list categories for this list, then recreate
+    await supabase.from("inventory_catalog_items").update({ list_category_id: null }).eq("inventory_list_id", selectedList.id);
+    await supabase.from("list_categories").delete().eq("list_id", selectedList.id);
+    const catMap: Record<string, string> = {};
+    let sortIdx = 0;
+    for (const catName of aiGroups) {
+      const { data } = await supabase.from("list_categories").insert({
+        list_id: selectedList.id, name: catName, sort_order: sortIdx++,
+      }).select().single();
+      if (data) catMap[catName] = data.id;
+    }
+    // Also create "Other" category
+    const { data: otherCat } = await supabase.from("list_categories").insert({
+      list_id: selectedList.id, name: "Other", sort_order: sortIdx,
+    }).select().single();
+    if (otherCat) catMap["Other"] = otherCat.id;
+    // Assign items to categories
     for (const item of catalogItems) {
       const aiCat = getAICategory(item.item_name);
-      if (aiCat !== (item.category || "Other")) {
-        await supabase.from("inventory_catalog_items").update({ category: aiCat === "Other" ? null : aiCat }).eq("id", item.id);
+      const catId = catMap[aiCat] || catMap["Other"] || null;
+      if (catId) {
+        await supabase.from("inventory_catalog_items").update({ list_category_id: catId }).eq("id", item.id);
       }
     }
     setSaveStatus("saved");
     setTimeout(() => setSaveStatus("idle"), 2000);
-    toast.success("AI categories saved to items");
+    toast.success("AI categories saved to this list");
     openListDetail(selectedList);
   };
 
@@ -629,32 +674,34 @@ export default function ListManagementPage() {
     if (selectedList?.id === targetListId) openListDetail(selectedList);
   };
 
-  // ─── CATEGORY MANAGEMENT ──────────────────────
-  const categories = [...new Set(catalogItems.map(i => i.category).filter(Boolean))] as string[];
-
-  const handleAddCategory = () => {
-    if (!newCategoryName.trim()) return;
-    if (categories.includes(newCategoryName.trim())) { toast.error("Category already exists"); return; }
-    toast.success(`Category "${newCategoryName.trim()}" ready. Assign items to use it.`);
-    setNewCategoryName("");
+  // ─── LIST CATEGORY MANAGEMENT (per-list) ──────
+  const handleAddListCategory = async () => {
+    if (!selectedList || !newListCategoryName.trim()) return;
+    if (listCategories.some(c => c.name === newListCategoryName.trim())) { toast.error("Category already exists in this list"); return; }
+    const maxOrder = listCategories.length > 0 ? Math.max(...listCategories.map(c => c.sort_order)) + 1 : 0;
+    const { data, error } = await supabase.from("list_categories").insert({
+      list_id: selectedList.id, name: newListCategoryName.trim(), sort_order: maxOrder,
+    }).select().single();
+    if (error) toast.error(error.message);
+    else {
+      toast.success(`Category "${newListCategoryName.trim()}" created`);
+      setNewListCategoryName("");
+      if (data) setListCategories(prev => [...prev, data as ListCategory]);
+    }
   };
 
-  const handleRenameCategory = async (oldName: string, newName: string) => {
+  const handleRenameCategory = async (oldCat: ListCategory, newName: string) => {
     if (!selectedList) return;
-    const itemsInCat = catalogItems.filter(i => i.category === oldName);
-    for (const item of itemsInCat) {
-      await supabase.from("inventory_catalog_items").update({ category: newName }).eq("id", item.id);
-    }
+    await supabase.from("list_categories").update({ name: newName }).eq("id", oldCat.id);
     toast.success("Category renamed");
     openListDetail(selectedList);
   };
 
-  const handleDeleteCategory = async (catName: string) => {
+  const handleDeleteCategory = async (cat: ListCategory) => {
     if (!selectedList) return;
-    const itemsInCat = catalogItems.filter(i => i.category === catName);
-    for (const item of itemsInCat) {
-      await supabase.from("inventory_catalog_items").update({ category: null }).eq("id", item.id);
-    }
+    // Unassign items in this category
+    await supabase.from("inventory_catalog_items").update({ list_category_id: null }).eq("list_category_id", cat.id);
+    await supabase.from("list_categories").delete().eq("id", cat.id);
     toast.success("Category deleted, items uncategorized");
     openListDetail(selectedList);
   };
@@ -701,7 +748,7 @@ export default function ListManagementPage() {
       return { "All Items": items };
     }
 
-    if (viewMode === "ai-categories") {
+    if (viewMode === "custom-categories") {
       const groups: Record<string, CatalogItem[]> = {};
       items.forEach(item => {
         const cat = getAICategory(item.item_name);
@@ -711,13 +758,14 @@ export default function ListManagementPage() {
       return Object.keys(groups).length ? groups : { "All Items": items };
     }
 
-    if (viewMode === "user-categories") {
+    if (viewMode === "my-categories") {
       const groups: Record<string, CatalogItem[]> = {};
       const uncategorized: CatalogItem[] = [];
       items.forEach(item => {
-        if (item.category) {
-          if (!groups[item.category]) groups[item.category] = [];
-          groups[item.category].push(item);
+        const cat = listCategories.find(c => c.id === item.list_category_id);
+        if (cat) {
+          if (!groups[cat.name]) groups[cat.name] = [];
+          groups[cat.name].push(item);
         } else {
           uncategorized.push(item);
         }
@@ -757,14 +805,14 @@ export default function ListManagementPage() {
   // ─── VIEW MODE LABEL ──────────────────────────
   const viewModeLabel: Record<ViewMode, string> = {
     "list-order": "List Order",
-    "ai-categories": "Custom Categories (AI)",
-    "user-categories": "User Categories",
+    "custom-categories": "Custom Categories",
+    "my-categories": "My Categories",
     "recently-purchased": "Recently Purchased",
   };
   const viewModeIcon: Record<ViewMode, React.ReactNode> = {
     "list-order": <LayoutList className="h-3.5 w-3.5" />,
-    "ai-categories": <Sparkles className="h-3.5 w-3.5" />,
-    "user-categories": <User className="h-3.5 w-3.5" />,
+    "custom-categories": <Sparkles className="h-3.5 w-3.5" />,
+    "my-categories": <User className="h-3.5 w-3.5" />,
     "recently-purchased": <Clock className="h-3.5 w-3.5" />,
   };
 
@@ -795,11 +843,7 @@ export default function ListManagementPage() {
   // ═══════════════════════════════════════════════
   if (selectedList) {
     const grouped = getGroupedItems();
-    const allCategories = [...categories];
-    // Include AI categories if in AI mode
-    if (viewMode === "ai-categories") {
-      Object.keys(grouped).forEach(k => { if (!allCategories.includes(k)) allCategories.push(k); });
-    }
+    const catNames = listCategories.map(c => c.name);
 
     return (
       <div className="space-y-5 animate-fade-in">
@@ -915,13 +959,13 @@ export default function ListManagementPage() {
                     <LayoutList className="h-4 w-4" /> List Order
                     {viewMode === "list-order" && <Check className="h-3.5 w-3.5 ml-auto" />}
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => { setViewMode("ai-categories"); setSelectedItems(new Set()); }} className="gap-2">
-                    <Sparkles className="h-4 w-4" /> Custom Categories (AI)
-                    {viewMode === "ai-categories" && <Check className="h-3.5 w-3.5 ml-auto" />}
+                  <DropdownMenuItem onClick={() => { setViewMode("custom-categories"); setSelectedItems(new Set()); }} className="gap-2">
+                    <Sparkles className="h-4 w-4" /> Custom Categories
+                    {viewMode === "custom-categories" && <Check className="h-3.5 w-3.5 ml-auto" />}
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => { setViewMode("user-categories"); setSelectedItems(new Set()); }} className="gap-2">
-                    <User className="h-4 w-4" /> User Categories
-                    {viewMode === "user-categories" && <Check className="h-3.5 w-3.5 ml-auto" />}
+                  <DropdownMenuItem onClick={() => { setViewMode("my-categories"); setSelectedItems(new Set()); }} className="gap-2">
+                    <User className="h-4 w-4" /> My Categories
+                    {viewMode === "my-categories" && <Check className="h-3.5 w-3.5 ml-auto" />}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => { setViewMode("recently-purchased"); setSelectedItems(new Set()); }} className="gap-2">
@@ -948,7 +992,7 @@ export default function ListManagementPage() {
                         <Select value={newItem.category} onValueChange={v => setNewItem({ ...newItem, category: v })}>
                           <SelectTrigger className="h-9"><SelectValue placeholder="Select..." /></SelectTrigger>
                           <SelectContent>
-                            {categories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                            {listCategories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
                           </SelectContent>
                         </Select>
                       </div>
@@ -978,7 +1022,7 @@ export default function ListManagementPage() {
                         <SelectTrigger className="h-9"><SelectValue placeholder="Select category..." /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="__uncategorized">Uncategorized</SelectItem>
-                          {categories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                          {listCategories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
                         </SelectContent>
                       </Select>
                       <Button onClick={handleBulkMove} className="w-full bg-gradient-amber" disabled={!bulkMoveTarget}>Move Items</Button>
@@ -991,13 +1035,30 @@ export default function ListManagementPage() {
               </div>
             )}
 
-            {/* AI Categories: Save button */}
-            {viewMode === "ai-categories" && (
+            {/* Custom Categories: Auto-create + Save button */}
+            {viewMode === "custom-categories" && (
               <div className="flex items-center gap-3 p-3 rounded-lg border border-primary/20 bg-primary/5">
                 <Sparkles className="h-4 w-4 text-primary" />
-                <p className="text-xs text-muted-foreground flex-1">AI-generated categories based on item names. Click "Save categories" to persist.</p>
+                <p className="text-xs text-muted-foreground flex-1">Auto-generated categories based on item names. Click "Save" to persist to this list.</p>
                 <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={handleSaveAICategories}>
-                  <Check className="h-3 w-3" /> Save categories
+                  <Check className="h-3 w-3" /> Save categories to list
+                </Button>
+              </div>
+            )}
+
+            {/* My Categories: Create category input */}
+            {viewMode === "my-categories" && (
+              <div className="flex items-center gap-3 p-3 rounded-lg border bg-muted/20">
+                <FolderPlus className="h-4 w-4 text-muted-foreground" />
+                <Input
+                  value={newListCategoryName}
+                  onChange={e => setNewListCategoryName(e.target.value)}
+                  placeholder="+ Create category..."
+                  className="h-8 text-sm flex-1 max-w-xs"
+                  onKeyDown={e => e.key === "Enter" && handleAddListCategory()}
+                />
+                <Button size="sm" variant="outline" className="h-8 text-xs gap-1" onClick={handleAddListCategory} disabled={!newListCategoryName.trim()}>
+                  <Plus className="h-3 w-3" /> Create
                 </Button>
               </div>
             )}
@@ -1024,7 +1085,7 @@ export default function ListManagementPage() {
                       <Table>
                         <TableHeader>
                           <TableRow className="bg-muted/30">
-                            {(viewMode === "user-categories" || viewMode === "ai-categories") && (
+                            {(viewMode === "my-categories" || viewMode === "custom-categories") && (
                               <TableHead className="w-10">
                                 <Checkbox
                                   checked={catItems.every(i => selectedItems.has(i.id))}
@@ -1053,7 +1114,7 @@ export default function ListManagementPage() {
                           {(provided) => (
                             <TableBody ref={provided.innerRef} {...provided.droppableProps}>
                               {catItems.map((item, idx) => (
-                                <Draggable key={item.id} draggableId={item.id} index={idx} isDragDisabled={!reorderMode && viewMode !== "user-categories"}>
+                                <Draggable key={item.id} draggableId={item.id} index={idx} isDragDisabled={!reorderMode && viewMode !== "my-categories"}>
                                   {(dragProvided, snapshot) => (
                                     <TableRow
                                       ref={dragProvided.innerRef}
@@ -1062,7 +1123,7 @@ export default function ListManagementPage() {
                                     >
                                       {editingItem === item.id ? (
                                         <>
-                                          {(viewMode === "user-categories" || viewMode === "ai-categories") && <TableCell />}
+                                          {(viewMode === "my-categories" || viewMode === "custom-categories") && <TableCell />}
                                           {reorderMode && <TableCell><div {...dragProvided.dragHandleProps}><GripVertical className="h-4 w-4 text-muted-foreground" /></div></TableCell>}
                                           <TableCell className="text-xs text-muted-foreground">{idx + 1}</TableCell>
                                           <TableCell><Input className="h-8 text-sm" value={editValues.item_name} onChange={e => setEditValues({ ...editValues, item_name: e.target.value })} /></TableCell>
@@ -1079,7 +1140,7 @@ export default function ListManagementPage() {
                                         </>
                                       ) : (
                                         <>
-                                          {(viewMode === "user-categories" || viewMode === "ai-categories") && (
+                                          {(viewMode === "my-categories" || viewMode === "custom-categories") && (
                                             <TableCell>
                                               <Checkbox
                                                 checked={selectedItems.has(item.id)}
@@ -1088,7 +1149,7 @@ export default function ListManagementPage() {
                                             </TableCell>
                                           )}
                                           {reorderMode && <TableCell><div {...dragProvided.dragHandleProps} className="cursor-grab active:cursor-grabbing"><GripVertical className="h-4 w-4 text-muted-foreground" /></div></TableCell>}
-                                          {(viewMode === "user-categories" && !reorderMode) && (
+                                          {(viewMode === "my-categories" && !reorderMode) && (
                                             <TableCell className="w-6"><div {...dragProvided.dragHandleProps} className="cursor-grab active:cursor-grabbing"><GripVertical className="h-4 w-4 text-muted-foreground/40 hover:text-muted-foreground" /></div></TableCell>
                                           )}
                                           <TableCell className="text-xs text-muted-foreground font-mono">{idx + 1}</TableCell>
@@ -1182,28 +1243,28 @@ export default function ListManagementPage() {
         {/* Category Manager Dialog */}
         <Dialog open={categoryManagerOpen} onOpenChange={setCategoryManagerOpen}>
           <DialogContent className="max-w-md">
-            <DialogHeader><DialogTitle>Category Manager</DialogTitle></DialogHeader>
+            <DialogHeader><DialogTitle>Category Manager — {selectedList.name}</DialogTitle></DialogHeader>
             <div className="space-y-4">
               <div className="flex gap-2">
-                <Input value={newCategoryName} onChange={e => setNewCategoryName(e.target.value)} placeholder="New category name..." className="h-9" />
-                <Button size="sm" onClick={handleAddCategory} disabled={!newCategoryName.trim()} className="bg-gradient-amber gap-1"><Plus className="h-3.5 w-3.5" /> Add</Button>
+                <Input value={newListCategoryName} onChange={e => setNewListCategoryName(e.target.value)} placeholder="New category name..." className="h-9" onKeyDown={e => e.key === "Enter" && handleAddListCategory()} />
+                <Button size="sm" onClick={handleAddListCategory} disabled={!newListCategoryName.trim()} className="bg-gradient-amber gap-1"><Plus className="h-3.5 w-3.5" /> Add</Button>
               </div>
-              {categories.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">No categories yet. Add one above or assign categories to items.</p>
+              {listCategories.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">No categories for this list. Add one above.</p>
               ) : (
                 <div className="space-y-2 max-h-60 overflow-auto">
-                  {categories.map(cat => {
-                    const count = catalogItems.filter(i => i.category === cat).length;
+                  {listCategories.map(cat => {
+                    const count = catalogItems.filter(i => i.list_category_id === cat.id).length;
                     return (
-                      <div key={cat} className="flex items-center justify-between p-2 rounded-md border bg-muted/20">
+                      <div key={cat.id} className="flex items-center justify-between p-2 rounded-md border bg-muted/20">
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium">{cat}</span>
+                          <span className="text-sm font-medium">{cat.name}</span>
                           <Badge variant="secondary" className="text-[10px]">{count} items</Badge>
                         </div>
                         <div className="flex gap-1">
                           <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => {
-                            const newName = prompt("Rename category:", cat);
-                            if (newName && newName !== cat) handleRenameCategory(cat, newName);
+                            const newName = prompt("Rename category:", cat.name);
+                            if (newName && newName !== cat.name) handleRenameCategory(cat, newName);
                           }}>
                             <Pencil className="h-3 w-3" />
                           </Button>
