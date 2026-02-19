@@ -581,27 +581,27 @@ export default function ListManagementPage() {
         setSaveStatus("saving");
         const updates: Promise<any>[] = [];
         // Upsert moved item
-        updates.push(supabase.from("list_item_category_map").upsert({
+        updates.push(Promise.resolve(supabase.from("list_item_category_map").upsert({
           list_id: selectedList.id, category_set_id: set.id, catalog_item_id: movedItem.id,
           category_id: newCategoryId, item_sort_order: destination.index,
-        }, { onConflict: "category_set_id,catalog_item_id" }).select().then(() => {}));
+        }, { onConflict: "category_set_id,catalog_item_id" }).select()));
         // Re-sort source
         sourceItems.forEach((item, i) => {
-          updates.push(supabase.from("list_item_category_map").upsert({
+          updates.push(Promise.resolve(supabase.from("list_item_category_map").upsert({
             list_id: selectedList.id, category_set_id: set.id, catalog_item_id: item.id,
             category_id: currentMaps.find(m => m.catalog_item_id === item.id)?.category_id || null,
             item_sort_order: i,
-          }, { onConflict: "category_set_id,catalog_item_id" }).select().then(() => {}));
+          }, { onConflict: "category_set_id,catalog_item_id" }).select()));
         });
         // Re-sort destination
         destItems.forEach((item, i) => {
           if (item.id !== movedItem.id) {
             const map = currentMaps.find(m => m.catalog_item_id === item.id);
-            updates.push(supabase.from("list_item_category_map").upsert({
+            updates.push(Promise.resolve(supabase.from("list_item_category_map").upsert({
               list_id: selectedList.id, category_set_id: set.id, catalog_item_id: item.id,
               category_id: map?.category_id || newCategoryId,
               item_sort_order: i,
-            }, { onConflict: "category_set_id,catalog_item_id" }).select().then(() => {}));
+            }, { onConflict: "category_set_id,catalog_item_id" }).select()));
           }
         });
         await Promise.all(updates);
