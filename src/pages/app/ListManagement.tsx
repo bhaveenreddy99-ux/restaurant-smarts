@@ -9,18 +9,10 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Plus, Trash2, GripVertical, Tag, Pencil, Upload, Search, Check, Package, FolderOpen } from "lucide-react";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+import { Plus, Trash2, GripVertical, Upload, Search, Package, FolderOpen } from "lucide-react";
 import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import * as XLSX from "xlsx";
-
-interface Category {
-  id: string;
-  restaurant_id: string;
-  name: string;
-  sort_order: number;
-}
 
 interface InventoryItem {
   id: string;
@@ -33,24 +25,14 @@ interface InventoryItem {
   sort_order: number;
 }
 
-type Step = 1 | 2 | 3;
-
 export default function ListManagementPage() {
   const { currentRestaurant } = useRestaurant();
-  const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<InventoryItem[]>([]);
-  const [step, setStep] = useState<Step>(1);
-  const [filterCategory, setFilterCategory] = useState("all");
   const [search, setSearch] = useState("");
-
-  // Category form
-  const [newCatName, setNewCatName] = useState("");
-  const [editingCat, setEditingCat] = useState<string | null>(null);
-  const [editCatName, setEditCatName] = useState("");
 
   // Item form
   const [itemOpen, setItemOpen] = useState(false);
-  const [newItem, setNewItem] = useState({ item_name: "", item_number: "", pack_size: "", unit_price: 0, category_id: "" });
+  const [newItem, setNewItem] = useState({ item_name: "", item_number: "", pack_size: "", unit_price: 0 });
 
   // Import
   const [importOpen, setImportOpen] = useState(false);
@@ -62,23 +44,27 @@ export default function ListManagementPage() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const requiredFields = ["item_name", "pack_size", "unit_price"];
-  const optionalFields = ["item_number", "category"];
-
-  // Category mapping mode for import
-  const [categoryMode, setCategoryMode] = useState<"column" | "default" | "uncategorized">("column");
-  const [defaultCategoryId, setDefaultCategoryId] = useState("");
-  const [newDefaultCatName, setNewDefaultCatName] = useState("");
+  const optionalFields = ["item_number"];
 
   const restaurantId = currentRestaurant?.id;
 
-  const fetchCategories = useCallback(async () => {
-    if (!restaurantId) return;
-    const { data } = await supabase
+  // Ensure a default category exists for the restaurant
+  const getOrCreateDefaultCategory = useCallback(async (): Promise<string | null> => {
+    if (!restaurantId) return null;
+    const { data: existing } = await supabase
       .from("categories")
-      .select("*")
+      .select("id")
       .eq("restaurant_id", restaurantId)
-      .order("sort_order");
-    if (data) setCategories(data);
+      .limit(1)
+      .single();
+    if (existing) return existing.id;
+    const { data: created, error } = await supabase
+      .from("categories")
+      .insert({ restaurant_id: restaurantId, name: "General", sort_order: 0 })
+      .select("id")
+      .single();
+    if (error || !created) return null;
+    return created.id;
   }, [restaurantId]);
 
   const fetchItems = useCallback(async () => {
@@ -92,68 +78,18 @@ export default function ListManagementPage() {
   }, [restaurantId]);
 
   useEffect(() => {
-    fetchCategories();
     fetchItems();
-  }, [fetchCategories, fetchItems]);
-
-  // Auto-set step based on data
-  useEffect(() => {
-    if (categories.length === 0) setStep(1);
-    else if (items.length === 0) setStep(2);
-    else setStep(3);
-  }, [categories.length, items.length]);
-
-  // -------- CATEGORIES --------
-  const handleAddCategory = async () => {
-    if (!restaurantId || !newCatName.trim()) return;
-    const maxOrder = categories.length > 0 ? Math.max(...categories.map(c => c.sort_order)) + 1 : 0;
-    const { error } = await supabase.from("categories").insert({
-      restaurant_id: restaurantId,
-      name: newCatName.trim(),
-      sort_order: maxOrder,
-    });
-    if (error) {
-      if (error.message.includes("duplicate")) toast.error("Category already exists");
-      else toast.error(error.message);
-    } else {
-      toast.success("Category added");
-      setNewCatName("");
-      fetchCategories();
-    }
-  };
-
-  const handleRenameCategory = async (id: string) => {
-    if (!editCatName.trim()) return;
-    const { error } = await supabase.from("categories").update({ name: editCatName.trim() }).eq("id", id);
-    if (error) toast.error(error.message);
-    else { setEditingCat(null); fetchCategories(); }
-  };
-
-  const handleDeleteCategory = async (id: string) => {
-    const { error } = await supabase.from("categories").delete().eq("id", id);
-    if (error) toast.error(error.message);
-    else { toast.success("Category deleted"); fetchCategories(); fetchItems(); }
-  };
-
-  const handleCategoryDragEnd = async (result: DropResult) => {
-    if (!result.destination) return;
-    const reordered = Array.from(categories);
-    const [moved] = reordered.splice(result.source.index, 1);
-    reordered.splice(result.destination.index, 0, moved);
-    setCategories(reordered);
-    for (let i = 0; i < reordered.length; i++) {
-      await supabase.from("categories").update({ sort_order: i }).eq("id", reordered[i].id);
-    }
-  };
+  }, [fetchItems]);
 
   // -------- ITEMS --------
   const handleAddItem = async () => {
-    if (!restaurantId || !newItem.item_name.trim() || !newItem.pack_size.trim() || !newItem.category_id) return;
-    const categoryItems = items.filter(i => i.category_id === newItem.category_id);
-    const maxOrder = categoryItems.length > 0 ? Math.max(...categoryItems.map(i => i.sort_order)) + 1 : 0;
+    if (!restaurantId || !newItem.item_name.trim() || !newItem.pack_size.trim()) return;
+    const categoryId = await getOrCreateDefaultCategory();
+    if (!categoryId) { toast.error("Failed to create default category"); return; }
+    const maxOrder = items.length > 0 ? Math.max(...items.map(i => i.sort_order)) + 1 : 0;
     const { error } = await supabase.from("inventory_items").insert({
       restaurant_id: restaurantId,
-      category_id: newItem.category_id,
+      category_id: categoryId,
       item_name: newItem.item_name.trim(),
       item_number: newItem.item_number.trim() || null,
       pack_size: newItem.pack_size.trim(),
@@ -163,7 +99,7 @@ export default function ListManagementPage() {
     if (error) toast.error(error.message);
     else {
       toast.success("Item added");
-      setNewItem({ item_name: "", item_number: "", pack_size: "", unit_price: 0, category_id: "" });
+      setNewItem({ item_name: "", item_number: "", pack_size: "", unit_price: 0 });
       setItemOpen(false);
       fetchItems();
     }
@@ -175,57 +111,19 @@ export default function ListManagementPage() {
     else fetchItems();
   };
 
-  const handleItemCategoryChange = async (itemId: string, newCategoryId: string) => {
-    const { error } = await supabase.from("inventory_items").update({ category_id: newCategoryId }).eq("id", itemId);
-    if (error) toast.error(error.message);
-    else { toast.success("Item moved"); fetchItems(); }
-  };
-
   const handleItemDragEnd = async (result: DropResult) => {
     if (!result.destination) return;
-    const sourceCatId = result.source.droppableId;
-    const destCatId = result.destination.droppableId;
-
-    if (sourceCatId === destCatId) {
-      // Reorder within same category
-      const catItems = items.filter(i => i.category_id === sourceCatId).sort((a, b) => a.sort_order - b.sort_order);
-      const [moved] = catItems.splice(result.source.index, 1);
-      catItems.splice(result.destination.index, 0, moved);
-      const updated = items.map(i => {
-        const idx = catItems.findIndex(ci => ci.id === i.id);
-        if (idx >= 0) return { ...i, sort_order: idx };
-        return i;
-      });
-      setItems(updated);
-      for (let i = 0; i < catItems.length; i++) {
-        await supabase.from("inventory_items").update({ sort_order: i }).eq("id", catItems[i].id);
-      }
-    } else {
-      // Move to different category
-      const sourceCatItems = items.filter(i => i.category_id === sourceCatId).sort((a, b) => a.sort_order - b.sort_order);
-      const destCatItems = items.filter(i => i.category_id === destCatId).sort((a, b) => a.sort_order - b.sort_order);
-      const [moved] = sourceCatItems.splice(result.source.index, 1);
-      moved.category_id = destCatId;
-      destCatItems.splice(result.destination.index, 0, moved);
-
-      const updated = items.map(i => {
-        if (i.id === moved.id) return { ...i, category_id: destCatId, sort_order: result.destination!.index };
-        const sIdx = sourceCatItems.findIndex(ci => ci.id === i.id);
-        if (sIdx >= 0) return { ...i, sort_order: sIdx };
-        const dIdx = destCatItems.findIndex(ci => ci.id === i.id);
-        if (dIdx >= 0) return { ...i, sort_order: dIdx };
-        return i;
-      });
-      setItems(updated);
-
-      await supabase.from("inventory_items").update({ category_id: destCatId, sort_order: result.destination.index }).eq("id", moved.id);
-      for (let i = 0; i < sourceCatItems.length; i++) {
-        await supabase.from("inventory_items").update({ sort_order: i }).eq("id", sourceCatItems[i].id);
-      }
-      for (let i = 0; i < destCatItems.length; i++) {
-        await supabase.from("inventory_items").update({ sort_order: i }).eq("id", destCatItems[i].id);
-      }
-      toast.success("Item moved to " + categories.find(c => c.id === destCatId)?.name);
+    const reordered = Array.from(filteredItems);
+    const [moved] = reordered.splice(result.source.index, 1);
+    reordered.splice(result.destination.index, 0, moved);
+    const updatedItems = items.map(item => {
+      const newIdx = reordered.findIndex(r => r.id === item.id);
+      if (newIdx >= 0) return { ...item, sort_order: newIdx };
+      return item;
+    });
+    setItems(updatedItems);
+    for (let i = 0; i < reordered.length; i++) {
+      await supabase.from("inventory_items").update({ sort_order: i }).eq("id", reordered[i].id);
     }
   };
 
@@ -241,16 +139,12 @@ export default function ListManagementPage() {
       if (json.length === 0) { toast.error("No data found"); return; }
       setImportData(json);
       setImportHeaders(Object.keys(json[0]));
-      // Auto-map by matching names
       const autoMap: Record<string, string> = {};
-      const allFields = [...requiredFields, ...optionalFields];
       for (const h of Object.keys(json[0])) {
         const lower = h.toLowerCase().replace(/[^a-z]/g, "");
-        for (const f of allFields) {
+        for (const f of [...requiredFields, ...optionalFields]) {
           const fLower = f.replace("_", "");
-          if (lower.includes(fLower) || lower.includes(f.replace("_", " ").replace(/ /g, ""))) {
-            autoMap[f] = h;
-          }
+          if (lower.includes(fLower)) autoMap[f] = h;
         }
       }
       setImportMapping(autoMap);
@@ -259,100 +153,30 @@ export default function ListManagementPage() {
     reader.readAsBinaryString(file);
   };
 
-  const handleCreateDefaultCategory = async () => {
-    if (!restaurantId || !newDefaultCatName.trim()) return;
-    const maxOrder = categories.length > 0 ? Math.max(...categories.map(c => c.sort_order)) + 1 : 0;
-    const { data, error } = await supabase.from("categories").insert({
-      restaurant_id: restaurantId,
-      name: newDefaultCatName.trim(),
-      sort_order: maxOrder,
-    }).select().single();
-    if (error) { toast.error(error.message); return; }
-    toast.success("Category created");
-    setNewDefaultCatName("");
-    await fetchCategories();
-    if (data) setDefaultCategoryId(data.id);
-  };
-
   const handleImportPreview = () => {
     if (!importMapping.item_name || !importMapping.pack_size || !importMapping.unit_price) {
       toast.error("Map all required fields");
       return;
     }
-    if (categoryMode === "column" && !importMapping.category) {
-      toast.error("Select a column to map for Category, or choose another category mode");
-      return;
-    }
-    if (categoryMode === "default" && !defaultCategoryId) {
-      toast.error("Select a default category");
-      return;
-    }
-    const preview = importData.map(row => {
-      let category = "";
-      if (categoryMode === "column") {
-        category = String(row[importMapping.category] || "").trim();
-      } else if (categoryMode === "default") {
-        category = categories.find(c => c.id === defaultCategoryId)?.name || "";
-      } else {
-        category = "";
-      }
-      return {
-        item_name: String(row[importMapping.item_name] || "").trim(),
-        pack_size: String(row[importMapping.pack_size] || "").trim(),
-        unit_price: parseFloat(row[importMapping.unit_price]) || 0,
-        category,
-        item_number: importMapping.item_number ? String(row[importMapping.item_number] || "").trim() : "",
-      };
-    }).filter(r => r.item_name);
+    const preview = importData.map(row => ({
+      item_name: String(row[importMapping.item_name] || "").trim(),
+      pack_size: String(row[importMapping.pack_size] || "").trim(),
+      unit_price: parseFloat(row[importMapping.unit_price]) || 0,
+      item_number: importMapping.item_number ? String(row[importMapping.item_number] || "").trim() : "",
+    })).filter(r => r.item_name);
     setImportPreview(preview);
     setImportStep("preview");
   };
 
   const handleImportConfirm = async () => {
     if (!restaurantId) return;
-
-    // For "uncategorized" mode, we need a fallback category
-    // Items with empty category will have category_id = first available or create "Uncategorized"
-    const itemsWithCategory = importPreview.filter(r => r.category);
-    const itemsWithoutCategory = importPreview.filter(r => !r.category);
-
-    // Collect unique category names from items that have one
-    const uniqueCats = [...new Set(itemsWithCategory.map(r => r.category))];
-    const existingCatNames = categories.map(c => c.name);
-    const newCats = uniqueCats.filter(c => !existingCatNames.includes(c));
-
-    // If there are uncategorized items, ensure "Uncategorized" category exists
-    let needsUncategorized = itemsWithoutCategory.length > 0;
-    if (needsUncategorized && !existingCatNames.includes("Uncategorized") && !newCats.includes("Uncategorized")) {
-      newCats.push("Uncategorized");
-    }
-
-    // Create missing categories
-    if (newCats.length > 0) {
-      const maxOrder = categories.length > 0 ? Math.max(...categories.map(c => c.sort_order)) + 1 : 0;
-      for (let i = 0; i < newCats.length; i++) {
-        await supabase.from("categories").insert({
-          restaurant_id: restaurantId,
-          name: newCats[i],
-          sort_order: maxOrder + i,
-        });
-      }
-    }
-
-    // Refetch categories to get IDs
-    const { data: freshCats } = await supabase.from("categories").select("*").eq("restaurant_id", restaurantId);
-    if (!freshCats) { toast.error("Failed to load categories"); return; }
-
-    const catMap = new Map(freshCats.map(c => [c.name, c.id]));
-    const uncategorizedId = catMap.get("Uncategorized");
+    const categoryId = await getOrCreateDefaultCategory();
+    if (!categoryId) { toast.error("Failed to create default category"); return; }
     let created = 0;
-
     for (const row of importPreview) {
-      const catId = row.category ? catMap.get(row.category) : uncategorizedId;
-      if (!catId) continue;
       const { error } = await supabase.from("inventory_items").insert({
         restaurant_id: restaurantId,
-        category_id: catId,
+        category_id: categoryId,
         item_name: row.item_name,
         item_number: row.item_number || null,
         pack_size: row.pack_size,
@@ -361,25 +185,18 @@ export default function ListManagementPage() {
       });
       if (!error) created++;
     }
-
-    toast.success(`Imported ${created} items (${newCats.length} new categories)`);
+    toast.success(`Imported ${created} items`);
     setImportOpen(false);
     setImportStep("upload");
     setImportData([]);
     setImportPreview([]);
-    setCategoryMode("column");
-    setDefaultCategoryId("");
-    fetchCategories();
     fetchItems();
   };
 
-  // -------- FILTER & SEARCH --------
-  const filteredCategories = filterCategory === "all" ? categories : categories.filter(c => c.id === filterCategory);
-  const getItemsForCategory = (catId: string) => {
-    let catItems = items.filter(i => i.category_id === catId).sort((a, b) => a.sort_order - b.sort_order);
-    if (search) catItems = catItems.filter(i => i.item_name.toLowerCase().includes(search.toLowerCase()));
-    return catItems;
-  };
+  // -------- FILTER --------
+  const filteredItems = search
+    ? items.filter(i => i.item_name.toLowerCase().includes(search.toLowerCase()))
+    : items;
 
   if (!currentRestaurant) {
     return (
@@ -396,12 +213,12 @@ export default function ListManagementPage() {
       <div className="page-header">
         <div>
           <h1 className="page-title">List Management</h1>
-          <p className="page-description">Organize inventory by categories, then add items</p>
+          <p className="page-description">Manage your inventory items</p>
         </div>
         <div className="flex items-center gap-2">
           <Dialog open={importOpen} onOpenChange={(o) => { setImportOpen(o); if (!o) { setImportStep("upload"); setImportData([]); setImportPreview([]); } }}>
             <DialogTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-1.5" disabled={categories.length === 0}>
+              <Button variant="outline" size="sm" className="gap-1.5">
                 <Upload className="h-3.5 w-3.5" /> Import
               </Button>
             </DialogTrigger>
@@ -416,7 +233,7 @@ export default function ListManagementPage() {
               {importStep === "map" && (
                 <div className="space-y-4">
                   <p className="text-sm text-muted-foreground">Map your file columns to the required fields:</p>
-                  {[...requiredFields, ...optionalFields.filter(f => f !== "category")].map(field => (
+                  {[...requiredFields, ...optionalFields].map(field => (
                     <div key={field} className="flex items-center gap-3">
                       <Label className="w-28 text-xs capitalize">{field.replace("_", " ")}{requiredFields.includes(field) && " *"}</Label>
                       <Select value={importMapping[field] || ""} onValueChange={v => setImportMapping(prev => ({ ...prev, [field]: v }))}>
@@ -431,66 +248,6 @@ export default function ListManagementPage() {
                       </Select>
                     </div>
                   ))}
-
-                  {/* Category mapping mode */}
-                  <div className="border rounded-md p-3 space-y-3 bg-muted/20">
-                    <Label className="text-xs font-semibold">Category Assignment</Label>
-                    <div className="space-y-2">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="radio" name="catMode" checked={categoryMode === "column"} onChange={() => setCategoryMode("column")} className="accent-primary" />
-                        <span className="text-xs">Map from file column</span>
-                      </label>
-                      {categoryMode === "column" && (
-                        <Select value={importMapping.category || ""} onValueChange={v => setImportMapping(prev => ({ ...prev, category: v }))}>
-                          <SelectTrigger className="h-8 text-xs ml-6">
-                            <SelectValue placeholder="Select category column" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {importHeaders.map(h => (
-                              <SelectItem key={h} value={h}>{h}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
-
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="radio" name="catMode" checked={categoryMode === "default"} onChange={() => setCategoryMode("default")} className="accent-primary" />
-                        <span className="text-xs">Use one default category for all rows</span>
-                      </label>
-                      {categoryMode === "default" && (
-                        <div className="ml-6 space-y-2">
-                          <Select value={defaultCategoryId} onValueChange={setDefaultCategoryId}>
-                            <SelectTrigger className="h-8 text-xs">
-                              <SelectValue placeholder="Select category" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {categories.map(c => (
-                                <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <div className="flex gap-2">
-                            <Input
-                              value={newDefaultCatName}
-                              onChange={e => setNewDefaultCatName(e.target.value)}
-                              placeholder="Create new category..."
-                              className="h-7 text-xs flex-1"
-                              onKeyDown={e => e.key === "Enter" && handleCreateDefaultCategory()}
-                            />
-                            <Button size="sm" variant="outline" className="h-7 text-xs px-2" onClick={handleCreateDefaultCategory} disabled={!newDefaultCatName.trim()}>
-                              <Plus className="h-3 w-3 mr-1" /> Create
-                            </Button>
-                          </div>
-                        </div>
-                      )}
-
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input type="radio" name="catMode" checked={categoryMode === "uncategorized"} onChange={() => setCategoryMode("uncategorized")} className="accent-primary" />
-                        <span className="text-xs">Leave uncategorized</span>
-                      </label>
-                    </div>
-                  </div>
-
                   <Button onClick={handleImportPreview} className="w-full bg-gradient-amber">Preview</Button>
                 </div>
               )}
@@ -502,7 +259,6 @@ export default function ListManagementPage() {
                       <TableHeader>
                         <TableRow>
                           <TableHead className="text-xs">Item</TableHead>
-                          <TableHead className="text-xs">Category</TableHead>
                           <TableHead className="text-xs">Pack Size</TableHead>
                           <TableHead className="text-xs text-right">Price</TableHead>
                         </TableRow>
@@ -511,7 +267,6 @@ export default function ListManagementPage() {
                         {importPreview.slice(0, 20).map((row, i) => (
                           <TableRow key={i}>
                             <TableCell className="text-xs">{row.item_name}</TableCell>
-                            <TableCell className="text-xs">{row.category || <Badge variant="secondary" className="text-[10px]">Uncategorized</Badge>}</TableCell>
                             <TableCell className="text-xs">{row.pack_size}</TableCell>
                             <TableCell className="text-xs text-right">${row.unit_price.toFixed(2)}</TableCell>
                           </TableRow>
@@ -528,267 +283,95 @@ export default function ListManagementPage() {
         </div>
       </div>
 
-      {/* Stepper */}
-      <div className="flex items-center gap-2">
-        {[
-          { n: 1 as Step, label: "Create Categories" },
-          { n: 2 as Step, label: "Add Items" },
-          { n: 3 as Step, label: "Review & Arrange" },
-        ].map(({ n, label }) => (
-          <button
-            key={n}
-            onClick={() => { if (n === 1 || (n === 2 && categories.length > 0) || (n === 3 && items.length > 0)) setStep(n); }}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-              step === n ? "bg-primary text-primary-foreground" :
-              (n < step || (n === 2 && categories.length > 0) || (n === 3 && items.length > 0))
-                ? "bg-muted text-foreground" : "bg-muted/50 text-muted-foreground cursor-not-allowed"
-            }`}
-          >
-            {(n < step || (n === 2 && categories.length > 0 && step > 1) || (n === 3 && items.length > 0 && step > 2))
-              ? <Check className="h-3 w-3" /> : <span className="w-4 text-center">{n}</span>}
-            {label}
-          </button>
-        ))}
+      {/* Toolbar */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative flex-1 max-w-xs">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search items..."
+            className="pl-8 h-8 text-xs"
+          />
+        </div>
+        <Dialog open={itemOpen} onOpenChange={setItemOpen}>
+          <DialogTrigger asChild>
+            <Button size="sm" className="bg-gradient-amber gap-1.5">
+              <Plus className="h-3.5 w-3.5" /> Add Item
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Add Item</DialogTitle></DialogHeader>
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Item Name *</Label>
+                <Input value={newItem.item_name} onChange={e => setNewItem(p => ({ ...p, item_name: e.target.value }))} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Pack Size *</Label>
+                  <Input value={newItem.pack_size} onChange={e => setNewItem(p => ({ ...p, pack_size: e.target.value }))} placeholder="e.g. 12 oz" />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Unit Price *</Label>
+                  <Input type="number" step="0.01" value={newItem.unit_price} onChange={e => setNewItem(p => ({ ...p, unit_price: parseFloat(e.target.value) || 0 }))} />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Item Number (optional)</Label>
+                <Input value={newItem.item_number} onChange={e => setNewItem(p => ({ ...p, item_number: e.target.value }))} />
+              </div>
+              <Button onClick={handleAddItem} className="w-full bg-gradient-amber" disabled={!newItem.item_name || !newItem.pack_size}>Add Item</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
 
-      {/* Step 1: Categories */}
-      {step === 1 && (
-        <Card>
-          <CardContent className="pt-6 space-y-4">
-            <div className="flex items-center gap-2">
-              <Tag className="h-4 w-4 text-primary" />
-              <h2 className="text-base font-semibold">Categories</h2>
-            </div>
-            <div className="flex gap-2">
-              <Input
-                value={newCatName}
-                onChange={e => setNewCatName(e.target.value)}
-                placeholder="e.g. Produce, Dairy, Dry Goods"
-                className="flex-1"
-                onKeyDown={e => e.key === "Enter" && handleAddCategory()}
-              />
-              <Button onClick={handleAddCategory} className="bg-gradient-amber gap-1.5" size="sm">
-                <Plus className="h-3.5 w-3.5" /> Add
-              </Button>
-            </div>
-
-            {categories.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-4 text-center">No categories yet. Create one to get started.</p>
-            ) : (
-              <DragDropContext onDragEnd={handleCategoryDragEnd}>
-                <Droppable droppableId="categories">
-                  {(provided) => (
-                    <div ref={provided.innerRef} {...provided.droppableProps} className="space-y-1">
-                      {categories.map((cat, idx) => (
-                        <Draggable key={cat.id} draggableId={cat.id} index={idx}>
-                          {(provided, snapshot) => (
-                            <div
-                              ref={provided.innerRef}
-                              {...provided.draggableProps}
-                              className={`flex items-center gap-3 px-3 py-2 rounded-md border ${snapshot.isDragging ? "bg-accent shadow-md" : "bg-card"}`}
-                            >
-                              <div {...provided.dragHandleProps} className="text-muted-foreground cursor-grab active:cursor-grabbing">
-                                <GripVertical className="h-4 w-4" />
-                              </div>
-                              {editingCat === cat.id ? (
-                                <div className="flex-1 flex gap-2">
-                                  <Input value={editCatName} onChange={e => setEditCatName(e.target.value)} className="h-7 text-sm flex-1" autoFocus onKeyDown={e => e.key === "Enter" && handleRenameCategory(cat.id)} />
-                                  <Button size="sm" variant="ghost" className="h-7" onClick={() => handleRenameCategory(cat.id)}>
-                                    <Check className="h-3.5 w-3.5" />
-                                  </Button>
-                                </div>
-                              ) : (
-                                <>
-                                  <span className="flex-1 text-sm font-medium">{cat.name}</span>
-                                  <Badge variant="secondary" className="text-[10px]">
-                                    {items.filter(i => i.category_id === cat.id).length} items
-                                  </Badge>
-                                  <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => { setEditingCat(cat.id); setEditCatName(cat.name); }}>
-                                    <Pencil className="h-3 w-3" />
-                                  </Button>
-                                  <AlertDialog>
-                                    <AlertDialogTrigger asChild>
-                                      <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive">
-                                        <Trash2 className="h-3 w-3" />
-                                      </Button>
-                                    </AlertDialogTrigger>
-                                    <AlertDialogContent>
-                                      <AlertDialogHeader>
-                                        <AlertDialogTitle>Delete "{cat.name}"?</AlertDialogTitle>
-                                        <AlertDialogDescription>This will delete the category and all items in it.</AlertDialogDescription>
-                                      </AlertDialogHeader>
-                                      <AlertDialogFooter>
-                                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                        <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => handleDeleteCategory(cat.id)}>Delete</AlertDialogAction>
-                                      </AlertDialogFooter>
-                                    </AlertDialogContent>
-                                  </AlertDialog>
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </Draggable>
-                      ))}
-                      {provided.placeholder}
-                    </div>
-                  )}
-                </Droppable>
-              </DragDropContext>
-            )}
-
-            {categories.length > 0 && (
-              <div className="flex justify-end">
-                <Button size="sm" onClick={() => setStep(2)}>Next: Add Items →</Button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Step 2 & 3: Items View */}
-      {(step === 2 || step === 3) && (
-        <>
-          {/* Toolbar */}
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="relative flex-1 max-w-xs">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-              <Input
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="Search items..."
-                className="pl-8 h-8 text-xs"
-              />
-            </div>
-            <Select value={filterCategory} onValueChange={setFilterCategory}>
-              <SelectTrigger className="w-[180px] h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Categories</SelectItem>
-                {categories.map(c => (
-                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Dialog open={itemOpen} onOpenChange={setItemOpen}>
-              <DialogTrigger asChild>
-                <Button size="sm" className="bg-gradient-amber gap-1.5">
-                  <Plus className="h-3.5 w-3.5" /> Add Item
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader><DialogTitle>Add Item</DialogTitle></DialogHeader>
-                <div className="space-y-3">
-                  <div className="space-y-1">
-                    <Label className="text-xs">Category *</Label>
-                    <Select value={newItem.category_id} onValueChange={v => setNewItem(p => ({ ...p, category_id: v }))}>
-                      <SelectTrigger><SelectValue placeholder="Select category" /></SelectTrigger>
-                      <SelectContent>
-                        {categories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">Item Name *</Label>
-                    <Input value={newItem.item_name} onChange={e => setNewItem(p => ({ ...p, item_name: e.target.value }))} />
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <Label className="text-xs">Pack Size *</Label>
-                      <Input value={newItem.pack_size} onChange={e => setNewItem(p => ({ ...p, pack_size: e.target.value }))} placeholder="e.g. 12 oz" />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Unit Price *</Label>
-                      <Input type="number" step="0.01" value={newItem.unit_price} onChange={e => setNewItem(p => ({ ...p, unit_price: parseFloat(e.target.value) || 0 }))} />
-                    </div>
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">Item Number (optional)</Label>
-                    <Input value={newItem.item_number} onChange={e => setNewItem(p => ({ ...p, item_number: e.target.value }))} />
-                  </div>
-                  <Button onClick={handleAddItem} className="w-full bg-gradient-amber" disabled={!newItem.item_name || !newItem.pack_size || !newItem.category_id}>Add Item</Button>
-                </div>
-              </DialogContent>
-            </Dialog>
-            <Button size="sm" variant="outline" onClick={() => setStep(1)}>
-              <Tag className="h-3.5 w-3.5 mr-1.5" /> Categories
-            </Button>
-          </div>
-
-          {/* Grouped Item List with Drag & Drop */}
-          <DragDropContext onDragEnd={handleItemDragEnd}>
-            {filteredCategories.length === 0 ? (
-              <Card>
-                <CardContent className="py-8 text-center text-muted-foreground">
-                  <FolderOpen className="mx-auto h-10 w-10 mb-3 opacity-20" />
-                  <p className="text-sm">No categories found.</p>
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="space-y-4">
-                {filteredCategories.map(cat => {
-                  const catItems = getItemsForCategory(cat.id);
-                  return (
-                    <Card key={cat.id}>
-                      <div className="px-4 py-2.5 border-b bg-muted/30 flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <Tag className="h-3.5 w-3.5 text-primary" />
-                          <span className="text-sm font-semibold">{cat.name}</span>
-                          <Badge variant="secondary" className="text-[10px]">{catItems.length}</Badge>
-                        </div>
-                      </div>
-                      <Droppable droppableId={cat.id}>
-                        {(provided) => (
-                          <div ref={provided.innerRef} {...provided.droppableProps} className="min-h-[40px]">
-                            {catItems.length === 0 && (
-                              <div className="py-4 text-center text-xs text-muted-foreground">
-                                No items. Drag items here or add one.
-                              </div>
-                            )}
-                            {catItems.map((item, idx) => (
-                              <Draggable key={item.id} draggableId={item.id} index={idx}>
-                                {(provided, snapshot) => (
-                                  <div
-                                    ref={provided.innerRef}
-                                    {...provided.draggableProps}
-                                    className={`flex items-center gap-3 px-4 py-2.5 border-b last:border-0 ${snapshot.isDragging ? "bg-accent shadow-md rounded-md" : ""}`}
-                                  >
-                                    <div {...provided.dragHandleProps} className="text-muted-foreground cursor-grab active:cursor-grabbing">
-                                      <GripVertical className="h-4 w-4" />
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                      <p className="text-sm font-medium truncate">{item.item_name}</p>
-                                      {item.item_number && <span className="text-[10px] text-muted-foreground">#{item.item_number}</span>}
-                                    </div>
-                                    <span className="text-xs text-muted-foreground font-mono shrink-0">{item.pack_size}</span>
-                                    <span className="text-xs font-medium shrink-0">${Number(item.unit_price).toFixed(2)}</span>
-                                    <Select value={item.category_id} onValueChange={v => handleItemCategoryChange(item.id, v)}>
-                                      <SelectTrigger className="w-[120px] h-7 text-[10px]">
-                                        <SelectValue />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        {categories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                                      </SelectContent>
-                                    </Select>
-                                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive shrink-0" onClick={() => handleDeleteItem(item.id)}>
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                    </Button>
-                                  </div>
-                                )}
-                              </Draggable>
-                            ))}
-                            {provided.placeholder}
+      {/* Item List */}
+      <DragDropContext onDragEnd={handleItemDragEnd}>
+        {filteredItems.length === 0 ? (
+          <Card>
+            <CardContent className="py-8 text-center text-muted-foreground">
+              <FolderOpen className="mx-auto h-10 w-10 mb-3 opacity-20" />
+              <p className="text-sm">No items yet. Add items or import from a file.</p>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <Droppable droppableId="items">
+              {(provided) => (
+                <div ref={provided.innerRef} {...provided.droppableProps}>
+                  {filteredItems.map((item, idx) => (
+                    <Draggable key={item.id} draggableId={item.id} index={idx}>
+                      {(provided, snapshot) => (
+                        <div
+                          ref={provided.innerRef}
+                          {...provided.draggableProps}
+                          className={`flex items-center gap-3 px-4 py-2.5 border-b last:border-0 ${snapshot.isDragging ? "bg-accent shadow-md rounded-md" : ""}`}
+                        >
+                          <div {...provided.dragHandleProps} className="text-muted-foreground cursor-grab active:cursor-grabbing">
+                            <GripVertical className="h-4 w-4" />
                           </div>
-                        )}
-                      </Droppable>
-                    </Card>
-                  );
-                })}
-              </div>
-            )}
-          </DragDropContext>
-        </>
-      )}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate">{item.item_name}</p>
+                            {item.item_number && <span className="text-[10px] text-muted-foreground">#{item.item_number}</span>}
+                          </div>
+                          <span className="text-xs text-muted-foreground font-mono shrink-0">{item.pack_size}</span>
+                          <span className="text-xs font-medium shrink-0">${Number(item.unit_price).toFixed(2)}</span>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive shrink-0" onClick={() => handleDeleteItem(item.id)}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      )}
+                    </Draggable>
+                  ))}
+                  {provided.placeholder}
+                </div>
+              )}
+            </Droppable>
+          </Card>
+        )}
+      </DragDropContext>
     </div>
   );
 }
