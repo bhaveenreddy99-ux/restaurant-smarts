@@ -78,6 +78,22 @@ interface ListCategory {
   list_id: string;
   name: string;
   sort_order: number;
+  category_set_id: string | null;
+}
+
+interface CategorySet {
+  id: string;
+  list_id: string;
+  set_type: "custom_ai" | "user_manual";
+}
+
+interface ItemCategoryMap {
+  id: string;
+  list_id: string;
+  category_set_id: string;
+  catalog_item_id: string;
+  category_id: string | null;
+  item_sort_order: number;
 }
 
 const AI_CATEGORY_MAP: Record<string, string[]> = {
@@ -125,9 +141,13 @@ export default function ListManagementPage() {
   // ── View mode
   const [viewMode, setViewMode] = useState<ViewMode>("list-order");
 
-  // ── List categories (per-list, NOT global)
+  // ── List categories (per-list, per-set)
   const [listCategories, setListCategories] = useState<ListCategory[]>([]);
   const [newListCategoryName, setNewListCategoryName] = useState("");
+
+  // ── Category sets & mappings
+  const [categorySets, setCategorySets] = useState<CategorySet[]>([]);
+  const [itemCategoryMaps, setItemCategoryMaps] = useState<ItemCategoryMap[]>([]);
 
   // ── Bulk select
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
@@ -162,7 +182,6 @@ export default function ListManagementPage() {
 
   // ── Category manager
   const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
-  
 
   // ── Issues
   const [issues, setIssues] = useState<IssueItem[]>([]);
@@ -180,6 +199,40 @@ export default function ListManagementPage() {
 
   const requiredMapFields = ["item_name", "unit", "pack_size"];
   const optionalMapFields = ["vendor_sku", "default_unit_cost"];
+
+  // ─── HELPER: Get or create category set ───────
+  const getOrCreateCategorySet = async (listId: string, setType: "custom_ai" | "user_manual"): Promise<CategorySet> => {
+    const existing = categorySets.find(s => s.list_id === listId && s.set_type === setType);
+    if (existing) return existing;
+    const { data, error } = await supabase.from("list_category_sets").insert({
+      list_id: listId, set_type: setType,
+    }).select().single();
+    if (error) throw error;
+    const newSet = data as CategorySet;
+    setCategorySets(prev => [...prev, newSet]);
+    return newSet;
+  };
+
+  // ─── HELPER: Get categories for current mode ──
+  const getCurrentSetId = (): string | null => {
+    if (!selectedList) return null;
+    const setType = viewMode === "custom-categories" ? "custom_ai" : viewMode === "my-categories" ? "user_manual" : null;
+    if (!setType) return null;
+    const set = categorySets.find(s => s.list_id === selectedList.id && s.set_type === setType);
+    return set?.id || null;
+  };
+
+  const getCurrentCategories = (): ListCategory[] => {
+    const setId = getCurrentSetId();
+    if (!setId) return [];
+    return listCategories.filter(c => c.category_set_id === setId);
+  };
+
+  const getCurrentMappings = (): ItemCategoryMap[] => {
+    const setId = getCurrentSetId();
+    if (!setId) return [];
+    return itemCategoryMaps.filter(m => m.category_set_id === setId);
+  };
 
   // ─── FETCH LISTS ──────────────────────────────
   const fetchLists = useCallback(async () => {
@@ -250,6 +303,11 @@ export default function ListManagementPage() {
 
   const handleDelete = async () => {
     if (!deleteListId) return;
+    // Delete category sets & mappings (cascade handles most)
+    await supabase.from("list_item_category_map").delete().eq("list_id", deleteListId);
+    await supabase.from("list_categories").delete().eq("list_id", deleteListId);
+    await supabase.from("list_category_sets").delete().eq("list_id", deleteListId);
+    
     const cascadeTables = ["inventory_catalog_items", "inventory_import_files", "import_runs", "import_templates"] as const;
     for (const table of cascadeTables) {
       await supabase.from(table).delete().eq("inventory_list_id", deleteListId);
@@ -308,24 +366,31 @@ export default function ListManagementPage() {
     setDetailSearch("");
     setActiveTab("items");
     setEditingItem(null);
-    setViewMode("list-order");
     setSelectedItems(new Set());
-    const { data } = await supabase
-      .from("inventory_catalog_items")
-      .select("*")
-      .eq("inventory_list_id", list.id)
-      .order("sort_order", { ascending: true });
-    if (data) {
-      setCatalogItems(data as CatalogItem[]);
-      computeIssues(data as CatalogItem[]);
+
+    // Set view mode from saved active_category_mode
+    const modeMap: Record<string, ViewMode> = {
+      list_order: "list-order",
+      custom_ai: "custom-categories",
+      user_manual: "my-categories",
+      recently_purchased: "recently-purchased",
+    };
+    setViewMode(modeMap[list.active_category_mode] || "list-order");
+
+    const [catalogRes, catsRes, setsRes, mapsRes] = await Promise.all([
+      supabase.from("inventory_catalog_items").select("*").eq("inventory_list_id", list.id).order("sort_order", { ascending: true }),
+      supabase.from("list_categories").select("*").eq("list_id", list.id).order("sort_order", { ascending: true }),
+      supabase.from("list_category_sets").select("*").eq("list_id", list.id),
+      supabase.from("list_item_category_map").select("*").eq("list_id", list.id).order("item_sort_order", { ascending: true }),
+    ]);
+
+    if (catalogRes.data) {
+      setCatalogItems(catalogRes.data as CatalogItem[]);
+      computeIssues(catalogRes.data as CatalogItem[]);
     }
-    // Fetch list-specific categories
-    const { data: cats } = await supabase
-      .from("list_categories")
-      .select("*")
-      .eq("list_id", list.id)
-      .order("sort_order", { ascending: true });
-    setListCategories((cats || []) as ListCategory[]);
+    setListCategories((catsRes.data || []) as ListCategory[]);
+    setCategorySets((setsRes.data || []) as CategorySet[]);
+    setItemCategoryMaps((mapsRes.data || []) as ItemCategoryMap[]);
 
     // Fetch purchase history for this list
     const { data: ph } = await supabase
@@ -433,9 +498,19 @@ export default function ListManagementPage() {
   };
 
   const handleDeleteItem = async (itemId: string) => {
+    // Also delete any category mappings for this item
+    await supabase.from("list_item_category_map").delete().eq("catalog_item_id", itemId);
     const { error } = await supabase.from("inventory_catalog_items").delete().eq("id", itemId);
     if (error) toast.error(error.message);
     else openListDetail(selectedList);
+  };
+
+  // ─── UPDATE ACTIVE CATEGORY MODE ─────────────
+  const updateActiveCategoryMode = async (mode: ViewMode) => {
+    if (!selectedList) return;
+    const dbMode = mode === "custom-categories" ? "custom_ai" : mode === "my-categories" ? "user_manual" : mode === "recently-purchased" ? "recently_purchased" : "list_order";
+    await supabase.from("inventory_lists").update({ active_category_mode: dbMode }).eq("id", selectedList.id);
+    setSelectedList({ ...selectedList, active_category_mode: dbMode });
   };
 
   // ─── DRAG & DROP ──────────────────────────────
@@ -445,68 +520,88 @@ export default function ListManagementPage() {
     const itemId = result.draggableId;
 
     if (viewMode === "my-categories" || viewMode === "custom-categories") {
-      // Build grouped items (same logic as getGroupedItems for my-categories)
+      const setType = viewMode === "custom-categories" ? "custom_ai" : "user_manual";
+      const currentCats = getCurrentCategories();
+      const currentMaps = getCurrentMappings();
       const grouped = getGroupedItems();
       const sourceCatName = source.droppableId;
       const destCatName = destination.droppableId;
 
-      // Get the items in source and destination groups
       const sourceItems = [...(grouped[sourceCatName] || [])];
       const destItems = sourceCatName === destCatName ? sourceItems : [...(grouped[destCatName] || [])];
 
-      // Remove from source
       const [movedItem] = sourceItems.splice(source.index, 1);
       if (!movedItem) return;
 
-      // Determine target category id
-      const targetCat = listCategories.find(c => c.name === destCatName);
+      const targetCat = currentCats.find(c => c.name === destCatName);
       const newCategoryId = destCatName === "Uncategorized" ? null : (targetCat?.id || null);
+
+      // Get or create category set
+      const set = await getOrCreateCategorySet(selectedList.id, setType);
 
       if (sourceCatName === destCatName) {
         // Within-category reorder
         sourceItems.splice(destination.index, 0, movedItem);
-        // Optimistic update
-        const updatedItems = catalogItems.map(ci => {
-          const idx = sourceItems.findIndex(si => si.id === ci.id);
-          if (idx !== -1) return { ...ci, sort_order: idx };
-          return ci;
+        // Update mappings optimistically
+        const updatedMaps = [...itemCategoryMaps];
+        sourceItems.forEach((item, i) => {
+          const mapIdx = updatedMaps.findIndex(m => m.category_set_id === set.id && m.catalog_item_id === item.id);
+          if (mapIdx >= 0) updatedMaps[mapIdx] = { ...updatedMaps[mapIdx], item_sort_order: i };
         });
-        setCatalogItems(updatedItems);
+        setItemCategoryMaps(updatedMaps);
         setSaveStatus("saving");
         const updates = sourceItems.map((item, i) =>
-          (async () => { await supabase.from("inventory_catalog_items").update({ sort_order: i }).eq("id", item.id); })()
+          supabase.from("list_item_category_map").upsert({
+            list_id: selectedList.id, category_set_id: set.id, catalog_item_id: item.id,
+            category_id: currentMaps.find(m => m.catalog_item_id === item.id)?.category_id || null,
+            item_sort_order: i,
+          }, { onConflict: "category_set_id,catalog_item_id" })
         );
         await Promise.all(updates);
       } else {
         // Cross-category move
-        destItems.splice(destination.index, 0, { ...movedItem, list_category_id: newCategoryId } as CatalogItem);
-        // Optimistic update
-        const updatedItems = catalogItems.map(ci => {
-          if (ci.id === movedItem.id) {
-            return { ...ci, list_category_id: newCategoryId, sort_order: destination.index };
-          }
-          // Update sort_order in destination category
-          const destIdx = destItems.findIndex(di => di.id === ci.id);
-          if (destIdx !== -1) return { ...ci, sort_order: destIdx };
-          // Update sort_order in source category (item removed)
-          const srcIdx = sourceItems.findIndex(si => si.id === ci.id);
-          if (srcIdx !== -1) return { ...ci, sort_order: srcIdx };
-          return ci;
-        });
-        setCatalogItems(updatedItems);
-        setSaveStatus("saving");
-        // Save category assignment + sort orders
-        const updates: Promise<any>[] = [
-          (async () => { await supabase.from("inventory_catalog_items").update({ list_category_id: newCategoryId, sort_order: destination.index }).eq("id", movedItem.id); })(),
-        ];
-        // Re-sort remaining source items
+        destItems.splice(destination.index, 0, movedItem);
+        const updatedMaps = [...itemCategoryMaps];
+        // Update moved item's category
+        const movedMapIdx = updatedMaps.findIndex(m => m.category_set_id === set.id && m.catalog_item_id === movedItem.id);
+        if (movedMapIdx >= 0) {
+          updatedMaps[movedMapIdx] = { ...updatedMaps[movedMapIdx], category_id: newCategoryId, item_sort_order: destination.index };
+        }
+        // Re-sort source
         sourceItems.forEach((item, i) => {
-          updates.push((async () => { await supabase.from("inventory_catalog_items").update({ sort_order: i }).eq("id", item.id); })());
+          const idx = updatedMaps.findIndex(m => m.category_set_id === set.id && m.catalog_item_id === item.id);
+          if (idx >= 0) updatedMaps[idx] = { ...updatedMaps[idx], item_sort_order: i };
         });
-        // Re-sort destination items
+        // Re-sort destination
+        destItems.forEach((item, i) => {
+          const idx = updatedMaps.findIndex(m => m.category_set_id === set.id && m.catalog_item_id === item.id);
+          if (idx >= 0) updatedMaps[idx] = { ...updatedMaps[idx], item_sort_order: i };
+        });
+        setItemCategoryMaps(updatedMaps);
+        setSaveStatus("saving");
+        const updates: Promise<any>[] = [];
+        // Upsert moved item
+        updates.push(supabase.from("list_item_category_map").upsert({
+          list_id: selectedList.id, category_set_id: set.id, catalog_item_id: movedItem.id,
+          category_id: newCategoryId, item_sort_order: destination.index,
+        }, { onConflict: "category_set_id,catalog_item_id" }).select().then(() => {}));
+        // Re-sort source
+        sourceItems.forEach((item, i) => {
+          updates.push(supabase.from("list_item_category_map").upsert({
+            list_id: selectedList.id, category_set_id: set.id, catalog_item_id: item.id,
+            category_id: currentMaps.find(m => m.catalog_item_id === item.id)?.category_id || null,
+            item_sort_order: i,
+          }, { onConflict: "category_set_id,catalog_item_id" }).select().then(() => {}));
+        });
+        // Re-sort destination
         destItems.forEach((item, i) => {
           if (item.id !== movedItem.id) {
-            updates.push((async () => { await supabase.from("inventory_catalog_items").update({ sort_order: i }).eq("id", item.id); })());
+            const map = currentMaps.find(m => m.catalog_item_id === item.id);
+            updates.push(supabase.from("list_item_category_map").upsert({
+              list_id: selectedList.id, category_set_id: set.id, catalog_item_id: item.id,
+              category_id: map?.category_id || newCategoryId,
+              item_sort_order: i,
+            }, { onConflict: "category_set_id,catalog_item_id" }).select().then(() => {}));
           }
         });
         await Promise.all(updates);
@@ -522,7 +617,6 @@ export default function ListManagementPage() {
     const reordered = Array.from(filtered);
     const [moved] = reordered.splice(source.index, 1);
     reordered.splice(destination.index, 0, moved);
-    // Optimistic
     const updatedItems = catalogItems.map(ci => {
       const idx = reordered.findIndex(ri => ri.id === ci.id);
       if (idx !== -1) return { ...ci, sort_order: idx };
@@ -531,7 +625,7 @@ export default function ListManagementPage() {
     setCatalogItems(updatedItems);
     setSaveStatus("saving");
     const updates2 = reordered.map((item, i) =>
-      (async () => { await supabase.from("inventory_catalog_items").update({ sort_order: i }).eq("id", item.id); })()
+      supabase.from("inventory_catalog_items").update({ sort_order: i }).eq("id", item.id)
     );
     await Promise.all(updates2);
     setSaveStatus("saved");
@@ -559,70 +653,106 @@ export default function ListManagementPage() {
 
   const handleBulkMove = async () => {
     if (!selectedList || selectedItems.size === 0) return;
+    const setType = viewMode === "custom-categories" ? "custom_ai" : "user_manual";
+    const set = await getOrCreateCategorySet(selectedList.id, setType);
     const targetCatId = bulkMoveTarget === "__uncategorized" ? null : bulkMoveTarget;
+    
     // Find existing items in target category to determine starting sort_order
-    const existingInTarget = catalogItems.filter(i => {
-      if (targetCatId === null) return !i.list_category_id;
-      return i.list_category_id === targetCatId;
-    }).filter(i => !selectedItems.has(i.id));
-    let nextOrder = existingInTarget.length > 0 ? Math.max(...existingInTarget.map(i => i.sort_order || 0)) + 1 : 0;
+    const currentMaps = getCurrentMappings();
+    const existingInTarget = currentMaps.filter(m => {
+      if (targetCatId === null) return !m.category_id;
+      return m.category_id === targetCatId;
+    }).filter(m => !selectedItems.has(m.catalog_item_id));
+    let nextOrder = existingInTarget.length > 0 ? Math.max(...existingInTarget.map(m => m.item_sort_order || 0)) + 1 : 0;
+
     // Optimistic update
-    const updatedItems = catalogItems.map(ci => {
-      if (selectedItems.has(ci.id)) {
-        return { ...ci, list_category_id: targetCatId, sort_order: nextOrder++ };
+    const updatedMaps = [...itemCategoryMaps];
+    const newMaps: ItemCategoryMap[] = [];
+    for (const itemId of selectedItems) {
+      const existingIdx = updatedMaps.findIndex(m => m.category_set_id === set.id && m.catalog_item_id === itemId);
+      if (existingIdx >= 0) {
+        updatedMaps[existingIdx] = { ...updatedMaps[existingIdx], category_id: targetCatId, item_sort_order: nextOrder++ };
+      } else {
+        newMaps.push({
+          id: crypto.randomUUID(),
+          list_id: selectedList.id,
+          category_set_id: set.id,
+          catalog_item_id: itemId,
+          category_id: targetCatId,
+          item_sort_order: nextOrder++,
+        });
       }
-      return ci;
-    });
-    setCatalogItems(updatedItems);
+    }
+    setItemCategoryMaps([...updatedMaps, ...newMaps]);
     setSaveStatus("saving");
-    // Reset nextOrder for DB writes
-    nextOrder = existingInTarget.length > 0 ? Math.max(...existingInTarget.map(i => i.sort_order || 0)) + 1 : 0;
+
+    // DB writes
+    nextOrder = existingInTarget.length > 0 ? Math.max(...existingInTarget.map(m => m.item_sort_order || 0)) + 1 : 0;
     const updates = Array.from(selectedItems).map(id => {
       const order = nextOrder++;
-      return (async () => { await supabase.from("inventory_catalog_items").update({ list_category_id: targetCatId, sort_order: order }).eq("id", id); })();
+      return supabase.from("list_item_category_map").upsert({
+        list_id: selectedList.id, category_set_id: set.id, catalog_item_id: id,
+        category_id: targetCatId, item_sort_order: order,
+      }, { onConflict: "category_set_id,catalog_item_id" });
     });
     await Promise.all(updates);
+
     setSaveStatus("saved");
     toast.success(`Moved ${selectedItems.size} items`);
     setTimeout(() => setSaveStatus("idle"), 2000);
     setSelectedItems(new Set());
     setBulkMoveOpen(false);
     setBulkMoveTarget("");
+    // Refresh mappings
+    const { data: refreshedMaps } = await supabase.from("list_item_category_map").select("*").eq("list_id", selectedList.id);
+    if (refreshedMaps) setItemCategoryMaps(refreshedMaps as ItemCategoryMap[]);
   };
 
   const handleSaveAICategories = async () => {
     if (!selectedList) return;
     setSaveStatus("saving");
-    // Create list_categories from AI groupings
+    
+    // Get or create custom_ai set
+    const set = await getOrCreateCategorySet(selectedList.id, "custom_ai");
+
+    // Delete existing AI categories and mappings for this set
+    await supabase.from("list_item_category_map").delete().eq("category_set_id", set.id);
+    await supabase.from("list_categories").delete().eq("category_set_id", set.id);
+
+    // Create categories from AI groupings
     const aiGroups = new Set<string>();
     catalogItems.forEach(item => {
       const cat = getAICategory(item.item_name);
-      if (cat !== "Other") aiGroups.add(cat);
+      aiGroups.add(cat);
     });
-    // Delete existing list categories for this list, then recreate
-    await supabase.from("inventory_catalog_items").update({ list_category_id: null }).eq("inventory_list_id", selectedList.id);
-    await supabase.from("list_categories").delete().eq("list_id", selectedList.id);
+
     const catMap: Record<string, string> = {};
     let sortIdx = 0;
     for (const catName of aiGroups) {
       const { data } = await supabase.from("list_categories").insert({
-        list_id: selectedList.id, name: catName, sort_order: sortIdx++,
+        list_id: selectedList.id, name: catName, sort_order: sortIdx++, category_set_id: set.id,
       }).select().single();
       if (data) catMap[catName] = data.id;
     }
-    // Also create "Other" category
-    const { data: otherCat } = await supabase.from("list_categories").insert({
-      list_id: selectedList.id, name: "Other", sort_order: sortIdx,
-    }).select().single();
-    if (otherCat) catMap["Other"] = otherCat.id;
-    // Assign items to categories
-    for (const item of catalogItems) {
+
+    // Create mappings for each item
+    const mappings = catalogItems.map((item, idx) => {
       const aiCat = getAICategory(item.item_name);
-      const catId = catMap[aiCat] || catMap["Other"] || null;
-      if (catId) {
-        await supabase.from("inventory_catalog_items").update({ list_category_id: catId }).eq("id", item.id);
-      }
+      return {
+        list_id: selectedList.id,
+        category_set_id: set.id,
+        catalog_item_id: item.id,
+        category_id: catMap[aiCat] || null,
+        item_sort_order: idx,
+      };
+    });
+    if (mappings.length > 0) {
+      await supabase.from("list_item_category_map").insert(mappings);
     }
+
+    // Update active mode
+    await updateActiveCategoryMode("custom-categories");
+
     setSaveStatus("saved");
     setTimeout(() => setSaveStatus("idle"), 2000);
     toast.success("AI categories saved to this list");
@@ -761,13 +891,18 @@ export default function ListManagementPage() {
     if (selectedList?.id === targetListId) openListDetail(selectedList);
   };
 
-  // ─── LIST CATEGORY MANAGEMENT (per-list) ──────
+  // ─── LIST CATEGORY MANAGEMENT (per-list, per-set) ──────
   const handleAddListCategory = async () => {
     if (!selectedList || !newListCategoryName.trim()) return;
-    if (listCategories.some(c => c.name === newListCategoryName.trim())) { toast.error("Category already exists in this list"); return; }
-    const maxOrder = listCategories.length > 0 ? Math.max(...listCategories.map(c => c.sort_order)) + 1 : 0;
+    const currentCats = getCurrentCategories();
+    if (currentCats.some(c => c.name === newListCategoryName.trim())) { toast.error("Category already exists"); return; }
+    
+    const setType = viewMode === "custom-categories" ? "custom_ai" : "user_manual";
+    const set = await getOrCreateCategorySet(selectedList.id, setType);
+    
+    const maxOrder = currentCats.length > 0 ? Math.max(...currentCats.map(c => c.sort_order)) + 1 : 0;
     const { data, error } = await supabase.from("list_categories").insert({
-      list_id: selectedList.id, name: newListCategoryName.trim(), sort_order: maxOrder,
+      list_id: selectedList.id, name: newListCategoryName.trim(), sort_order: maxOrder, category_set_id: set.id,
     }).select().single();
     if (error) toast.error(error.message);
     else {
@@ -786,8 +921,8 @@ export default function ListManagementPage() {
 
   const handleDeleteCategory = async (cat: ListCategory) => {
     if (!selectedList) return;
-    // Unassign items in this category
-    await supabase.from("inventory_catalog_items").update({ list_category_id: null }).eq("list_category_id", cat.id);
+    // Nullify category_id in mappings for this category
+    await supabase.from("list_item_category_map").update({ category_id: null }).eq("category_id", cat.id);
     await supabase.from("list_categories").delete().eq("id", cat.id);
     toast.success("Category deleted, items uncategorized");
     openListDetail(selectedList);
@@ -835,28 +970,41 @@ export default function ListManagementPage() {
       return { "All Items": items };
     }
 
-    if (viewMode === "custom-categories") {
-      const groups: Record<string, CatalogItem[]> = {};
-      items.forEach(item => {
-        const cat = getAICategory(item.item_name);
-        if (!groups[cat]) groups[cat] = [];
-        groups[cat].push(item);
-      });
-      return Object.keys(groups).length ? groups : { "All Items": items };
-    }
-
-    if (viewMode === "my-categories") {
+    if (viewMode === "custom-categories" || viewMode === "my-categories") {
+      const currentCats = getCurrentCategories();
+      const currentMaps = getCurrentMappings();
       const result: Record<string, CatalogItem[]> = {};
-      // Uncategorized first
-      const uncategorized = items.filter(i => !i.list_category_id).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+      
+      // Build a map from item id to mapping
+      const itemMapLookup = new Map<string, ItemCategoryMap>();
+      currentMaps.forEach(m => itemMapLookup.set(m.catalog_item_id, m));
+
+      // Uncategorized first (items with no mapping or null category_id)
+      const uncategorized = items.filter(i => {
+        const map = itemMapLookup.get(i.id);
+        return !map || !map.category_id;
+      }).sort((a, b) => {
+        const ma = itemMapLookup.get(a.id);
+        const mb = itemMapLookup.get(b.id);
+        return (ma?.item_sort_order ?? a.sort_order ?? 0) - (mb?.item_sort_order ?? b.sort_order ?? 0);
+      });
       result["Uncategorized"] = uncategorized;
-      // Then each list category in sort_order
-      const sortedCats = [...listCategories].sort((a, b) => a.sort_order - b.sort_order);
+
+      // Then each category in sort_order
+      const sortedCats = [...currentCats].sort((a, b) => a.sort_order - b.sort_order);
       for (const cat of sortedCats) {
-        const catItems = items.filter(i => i.list_category_id === cat.id).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        const catItems = items.filter(i => {
+          const map = itemMapLookup.get(i.id);
+          return map && map.category_id === cat.id;
+        }).sort((a, b) => {
+          const ma = itemMapLookup.get(a.id);
+          const mb = itemMapLookup.get(b.id);
+          return (ma?.item_sort_order ?? 0) - (mb?.item_sort_order ?? 0);
+        });
         result[cat.name] = catItems;
       }
-      // Remove empty groups except Uncategorized (always show it)
+
+      // Remove empty groups except Uncategorized
       const filtered: Record<string, CatalogItem[]> = {};
       for (const [key, val] of Object.entries(result)) {
         if (val.length > 0 || key === "Uncategorized") filtered[key] = val;
@@ -865,7 +1013,6 @@ export default function ListManagementPage() {
     }
 
     if (viewMode === "recently-purchased") {
-      // Match catalog items to recent purchases
       const matched: CatalogItem[] = [];
       const unmatched: CatalogItem[] = [];
       items.forEach(item => {
@@ -933,7 +1080,7 @@ export default function ListManagementPage() {
   // ═══════════════════════════════════════════════
   if (selectedList) {
     const grouped = getGroupedItems();
-    const catNames = listCategories.map(c => c.name);
+    const currentCats = getCurrentCategories();
 
     return (
       <div className="space-y-5 animate-fade-in">
@@ -1014,7 +1161,7 @@ export default function ListManagementPage() {
           </div>
         </div>
 
-        {/* Tabs: Items | Issues | Purchase History */}
+        {/* Tabs: Items | Issues */}
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList>
             <TabsTrigger value="items" className="gap-1.5">
@@ -1045,20 +1192,20 @@ export default function ListManagementPage() {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="w-56">
-                  <DropdownMenuItem onClick={() => { setViewMode("list-order"); setSelectedItems(new Set()); }} className="gap-2">
+                  <DropdownMenuItem onClick={() => { setViewMode("list-order"); updateActiveCategoryMode("list-order"); setSelectedItems(new Set()); }} className="gap-2">
                     <LayoutList className="h-4 w-4" /> List Order
                     {viewMode === "list-order" && <Check className="h-3.5 w-3.5 ml-auto" />}
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => { setViewMode("custom-categories"); setSelectedItems(new Set()); }} className="gap-2">
+                  <DropdownMenuItem onClick={() => { setViewMode("custom-categories"); updateActiveCategoryMode("custom-categories"); setSelectedItems(new Set()); }} className="gap-2">
                     <Sparkles className="h-4 w-4" /> Custom Categories
                     {viewMode === "custom-categories" && <Check className="h-3.5 w-3.5 ml-auto" />}
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => { setViewMode("my-categories"); setSelectedItems(new Set()); }} className="gap-2">
+                  <DropdownMenuItem onClick={() => { setViewMode("my-categories"); updateActiveCategoryMode("my-categories"); setSelectedItems(new Set()); }} className="gap-2">
                     <User className="h-4 w-4" /> My Categories
                     {viewMode === "my-categories" && <Check className="h-3.5 w-3.5 ml-auto" />}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => { setViewMode("recently-purchased"); setSelectedItems(new Set()); }} className="gap-2">
+                  <DropdownMenuItem onClick={() => { setViewMode("recently-purchased"); updateActiveCategoryMode("recently-purchased"); setSelectedItems(new Set()); }} className="gap-2">
                     <Clock className="h-4 w-4" /> Recently Purchased
                     {viewMode === "recently-purchased" && <Check className="h-3.5 w-3.5 ml-auto" />}
                   </DropdownMenuItem>
@@ -1082,7 +1229,7 @@ export default function ListManagementPage() {
                         <Select value={newItem.category} onValueChange={v => setNewItem({ ...newItem, category: v })}>
                           <SelectTrigger className="h-9"><SelectValue placeholder="Select..." /></SelectTrigger>
                           <SelectContent>
-                            {listCategories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                            {currentCats.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
                           </SelectContent>
                         </Select>
                       </div>
@@ -1112,7 +1259,7 @@ export default function ListManagementPage() {
                         <SelectTrigger className="h-9"><SelectValue placeholder="Select category..." /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="__uncategorized">Uncategorized</SelectItem>
-                          {listCategories.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                          {currentCats.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
                         </SelectContent>
                       </Select>
                       <Button onClick={handleBulkMove} className="w-full bg-gradient-amber" disabled={!bulkMoveTarget}>Move Items</Button>
@@ -1204,7 +1351,7 @@ export default function ListManagementPage() {
                           {(provided) => (
                             <TableBody ref={provided.innerRef} {...provided.droppableProps}>
                               {catItems.map((item, idx) => (
-                                <Draggable key={item.id} draggableId={item.id} index={idx} isDragDisabled={!reorderMode && viewMode !== "my-categories"}>
+                                <Draggable key={item.id} draggableId={item.id} index={idx} isDragDisabled={!reorderMode && viewMode !== "my-categories" && viewMode !== "custom-categories"}>
                                   {(dragProvided, snapshot) => (
                                     <TableRow
                                       ref={dragProvided.innerRef}
@@ -1239,7 +1386,7 @@ export default function ListManagementPage() {
                                             </TableCell>
                                           )}
                                           {reorderMode && <TableCell><div {...dragProvided.dragHandleProps} className="cursor-grab active:cursor-grabbing"><GripVertical className="h-4 w-4 text-muted-foreground" /></div></TableCell>}
-                                          {(viewMode === "my-categories" && !reorderMode) && (
+                                          {((viewMode === "my-categories" || viewMode === "custom-categories") && !reorderMode) && (
                                             <TableCell className="w-6"><div {...dragProvided.dragHandleProps} className="cursor-grab active:cursor-grabbing"><GripVertical className="h-4 w-4 text-muted-foreground/40 hover:text-muted-foreground" /></div></TableCell>
                                           )}
                                           <TableCell className="text-xs text-muted-foreground font-mono">{idx + 1}</TableCell>
@@ -1339,12 +1486,13 @@ export default function ListManagementPage() {
                 <Input value={newListCategoryName} onChange={e => setNewListCategoryName(e.target.value)} placeholder="New category name..." className="h-9" onKeyDown={e => e.key === "Enter" && handleAddListCategory()} />
                 <Button size="sm" onClick={handleAddListCategory} disabled={!newListCategoryName.trim()} className="bg-gradient-amber gap-1"><Plus className="h-3.5 w-3.5" /> Add</Button>
               </div>
-              {listCategories.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">No categories for this list. Add one above.</p>
+              {currentCats.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">No categories for this mode. Add one above.</p>
               ) : (
                 <div className="space-y-2 max-h-60 overflow-auto">
-                  {listCategories.map(cat => {
-                    const count = catalogItems.filter(i => i.list_category_id === cat.id).length;
+                  {currentCats.map(cat => {
+                    const currentMaps = getCurrentMappings();
+                    const count = currentMaps.filter(m => m.category_id === cat.id).length;
                     return (
                       <div key={cat.id} className="flex items-center justify-between p-2 rounded-md border bg-muted/20">
                         <div className="flex items-center gap-2">

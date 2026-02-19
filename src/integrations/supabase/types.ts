@@ -464,6 +464,7 @@ export type Database = {
       }
       inventory_lists: {
         Row: {
+          active_category_mode: string
           created_at: string
           created_by: string | null
           id: string
@@ -472,6 +473,7 @@ export type Database = {
           restaurant_id: string
         }
         Insert: {
+          active_category_mode?: string
           created_at?: string
           created_by?: string | null
           id?: string
@@ -480,6 +482,7 @@ export type Database = {
           restaurant_id: string
         }
         Update: {
+          active_category_mode?: string
           created_at?: string
           created_by?: string | null
           id?: string
@@ -674,6 +677,7 @@ export type Database = {
       }
       list_categories: {
         Row: {
+          category_set_id: string | null
           created_at: string
           id: string
           list_id: string
@@ -681,6 +685,7 @@ export type Database = {
           sort_order: number
         }
         Insert: {
+          category_set_id?: string | null
           created_at?: string
           id?: string
           list_id: string
@@ -688,6 +693,7 @@ export type Database = {
           sort_order?: number
         }
         Update: {
+          category_set_id?: string | null
           created_at?: string
           id?: string
           list_id?: string
@@ -696,7 +702,99 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "list_categories_category_set_id_fkey"
+            columns: ["category_set_id"]
+            isOneToOne: false
+            referencedRelation: "list_category_sets"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "list_categories_list_id_fkey"
+            columns: ["list_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_lists"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      list_category_sets: {
+        Row: {
+          created_at: string
+          id: string
+          list_id: string
+          set_type: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          list_id: string
+          set_type: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          list_id?: string
+          set_type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "list_category_sets_list_id_fkey"
+            columns: ["list_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_lists"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      list_item_category_map: {
+        Row: {
+          catalog_item_id: string
+          category_id: string | null
+          category_set_id: string
+          id: string
+          item_sort_order: number
+          list_id: string
+        }
+        Insert: {
+          catalog_item_id: string
+          category_id?: string | null
+          category_set_id: string
+          id?: string
+          item_sort_order?: number
+          list_id: string
+        }
+        Update: {
+          catalog_item_id?: string
+          category_id?: string | null
+          category_set_id?: string
+          id?: string
+          item_sort_order?: number
+          list_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "list_item_category_map_catalog_item_id_fkey"
+            columns: ["catalog_item_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_catalog_items"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "list_item_category_map_category_id_fkey"
+            columns: ["category_id"]
+            isOneToOne: false
+            referencedRelation: "list_categories"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "list_item_category_map_category_set_id_fkey"
+            columns: ["category_set_id"]
+            isOneToOne: false
+            referencedRelation: "list_category_sets"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "list_item_category_map_list_id_fkey"
             columns: ["list_id"]
             isOneToOne: false
             referencedRelation: "inventory_lists"
@@ -1732,6 +1830,10 @@ export type Database = {
       is_member_of: { Args: { r_id: string }; Returns: boolean }
       list_category_restaurant_id: {
         Args: { lc_list_id: string }
+        Returns: string
+      }
+      list_item_map_restaurant_id: {
+        Args: { p_list_id: string }
         Returns: string
       }
       order_restaurant_id: { Args: { o_id: string }; Returns: string }
