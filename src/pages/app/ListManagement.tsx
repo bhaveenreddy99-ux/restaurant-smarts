@@ -890,9 +890,6 @@ export default function ListManagementPage() {
               <AlertTriangle className="h-3.5 w-3.5" /> Issues
               {issues.length > 0 && <Badge variant="destructive" className="ml-1 h-5 px-1.5 text-[10px]">{issues.length}</Badge>}
             </TabsTrigger>
-            <TabsTrigger value="history" className="gap-1.5">
-              <ShoppingCart className="h-3.5 w-3.5" /> Purchase History
-            </TabsTrigger>
           </TabsList>
 
           {/* ── ITEMS TAB ── */}
@@ -1180,63 +1177,6 @@ export default function ListManagementPage() {
             )}
           </TabsContent>
 
-          {/* ── PURCHASE HISTORY TAB ── */}
-          <TabsContent value="history" className="space-y-4">
-            {purchaseHistory.length === 0 ? (
-              <Card>
-                <CardContent className="py-12 text-center text-muted-foreground">
-                  <ShoppingCart className="mx-auto h-10 w-10 mb-3 opacity-20" />
-                  <p className="text-sm font-medium">No purchase history for this list</p>
-                  <p className="text-xs text-muted-foreground mt-1">Save a Smart Order run to generate purchase history.</p>
-                </CardContent>
-              </Card>
-            ) : (
-              purchaseHistory.map(ph => (
-                <Card key={ph.id} className="overflow-hidden border shadow-sm">
-                  <CardContent className="p-0">
-                    <div className="flex items-center justify-between p-4 border-b bg-muted/20">
-                      <div>
-                        <p className="text-sm font-semibold">{new Date(ph.created_at).toLocaleDateString()}</p>
-                        {ph.vendor_name && <Badge variant="outline" className="mt-1 text-[10px]">{ph.vendor_name}</Badge>}
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        {phItems[ph.id]?.length || 0} items •
-                        ${phItems[ph.id]?.reduce((s: number, i: any) => s + (Number(i.total_cost) || 0), 0).toFixed(2) || "0.00"}
-                      </p>
-                    </div>
-                    {phItems[ph.id] && (
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead className="text-xs">Item</TableHead>
-                            <TableHead className="text-xs">Pack Size</TableHead>
-                            <TableHead className="text-xs">Qty</TableHead>
-                            <TableHead className="text-xs">Cost</TableHead>
-                            <TableHead className="text-xs w-16"></TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {phItems[ph.id].map((item: any) => (
-                            <TableRow key={item.id}>
-                              <TableCell className="text-sm">{item.item_name}</TableCell>
-                              <TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
-                              <TableCell className="text-sm font-mono">{item.quantity}</TableCell>
-                              <TableCell className="text-sm font-mono">{item.total_cost ? `$${Number(item.total_cost).toFixed(2)}` : "—"}</TableCell>
-                              <TableCell>
-                                <Button size="sm" variant="ghost" className="h-7 text-xs px-2" onClick={() => handleAddFromPurchase(item.item_name)}>
-                                  <Plus className="h-3 w-3 mr-1" /> Add
-                                </Button>
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    )}
-                  </CardContent>
-                </Card>
-              ))
-            )}
-          </TabsContent>
         </Tabs>
 
         {/* Category Manager Dialog */}
@@ -1480,6 +1420,21 @@ export default function ListManagementPage() {
           <CardContent className="flex flex-col items-center justify-center py-10 text-muted-foreground">
             <Plus className="h-8 w-8 mb-2 opacity-40" />
             <span className="text-sm font-medium">Create new list</span>
+          </CardContent>
+        </Card>
+
+        {/* Purchase History card */}
+        <Card className="hover:shadow-md transition-all cursor-pointer border shadow-sm group bg-muted/10" onClick={() => navigate("/app/purchase-history")}>
+          <CardContent className="p-4 space-y-2">
+            <div className="flex items-center gap-2">
+              <ShoppingCart className="h-4 w-4 text-primary opacity-60" />
+              <h3 className="font-semibold text-sm">Purchase History</h3>
+            </div>
+            <p className="text-[11px] text-muted-foreground">View all saved orders and procurement costs</p>
+            <div className="flex items-center gap-1 text-primary">
+              <span className="text-[10px] font-medium">Open</span>
+              <ChevronRight className="h-3 w-3" />
+            </div>
           </CardContent>
         </Card>
 
