@@ -65,6 +65,7 @@ export default function EnterInventoryPage() {
   const [viewSession, setViewSession] = useState<any>(null);
 
   const [clearEntriesSessionId, setClearEntriesSessionId] = useState<string | null>(null);
+  const [deleteSessionId, setDeleteSessionId] = useState<string | null>(null);
 
   const [smartOrderSession, setSmartOrderSession] = useState<any>(null);
   const [smartOrderParGuides, setSmartOrderParGuides] = useState<any[]>([]);
@@ -249,11 +250,12 @@ export default function EnterInventoryPage() {
     else { toast.success("Submitted for review!"); setActiveSession(null); setItems([]); fetchSessions(); }
   };
 
-  const handleDeleteSession = async (sessionId: string) => {
-    await supabase.from("inventory_session_items").delete().eq("session_id", sessionId);
-    const { error } = await supabase.from("inventory_sessions").delete().eq("id", sessionId);
+  const handleDeleteSession = async () => {
+    if (!deleteSessionId) return;
+    await supabase.from("inventory_session_items").delete().eq("session_id", deleteSessionId);
+    const { error } = await supabase.from("inventory_sessions").delete().eq("id", deleteSessionId);
     if (error) toast.error(error.message);
-    else { toast.success("Session deleted"); fetchSessions(); }
+    else { toast.success("Session deleted"); setDeleteSessionId(null); fetchSessions(); }
   };
 
   const handleClearEntries = async () => {
@@ -791,7 +793,7 @@ export default function EnterInventoryPage() {
                   <Button size="sm" variant="outline" className="gap-1 h-10 text-xs" onClick={() => setClearEntriesSessionId(s.id)}>
                     <Eraser className="h-3 w-3" /> Clear
                   </Button>
-                  <Button size="sm" variant="ghost" className="h-10 w-10 p-0 text-muted-foreground hover:text-destructive" onClick={() => handleDeleteSession(s.id)}>
+                  <Button size="sm" variant="ghost" className="h-10 w-10 p-0 text-muted-foreground hover:text-destructive" onClick={() => setDeleteSessionId(s.id)}>
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </>
@@ -856,7 +858,7 @@ export default function EnterInventoryPage() {
               <Button size="sm" variant="outline" className="gap-1 h-8 text-xs" onClick={() => setClearEntriesSessionId(s.id)}>
                 <Eraser className="h-3 w-3" /> Clear
               </Button>
-              <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive" onClick={() => handleDeleteSession(s.id)}>
+              <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive" onClick={() => setDeleteSessionId(s.id)}>
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
             </>
@@ -1088,6 +1090,20 @@ export default function EnterInventoryPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleClearEntries} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Clear Entries</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Session Confirm */}
+      <AlertDialog open={!!deleteSessionId} onOpenChange={(o) => !o && setDeleteSessionId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this session?</AlertDialogTitle>
+            <AlertDialogDescription>This will permanently delete this in-progress session and all its items. This action cannot be undone.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>No, keep it</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteSession} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Yes, delete</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
