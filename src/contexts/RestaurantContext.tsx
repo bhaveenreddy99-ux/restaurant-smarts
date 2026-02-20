@@ -120,8 +120,8 @@ export function RestaurantProvider({ children }: { children: ReactNode }) {
           .maybeSingle();
 
         if (uiState) {
-          if (uiState.selected_restaurant_id === null) {
-            // Portfolio mode
+          if (uiState.selected_restaurant_id === null && mapped.length > 1) {
+            // Portfolio mode — only valid with multiple restaurants
             setCurrentRestaurantState(null);
           } else {
             const found = mapped.find((r: Restaurant) => r.id === uiState.selected_restaurant_id);
