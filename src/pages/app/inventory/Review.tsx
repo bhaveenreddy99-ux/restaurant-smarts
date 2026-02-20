@@ -8,8 +8,9 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
-import { CheckCircle, XCircle, Eye, ClipboardCheck } from "lucide-react";
+import { CheckCircle, XCircle, Eye, ClipboardCheck, MoreHorizontal } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 function getRisk(currentStock: number, parLevel: number | null | undefined): { label: string; bgClass: string; textClass: string; color: string } {
   if (parLevel === null || parLevel === undefined || parLevel <= 0) {
@@ -28,6 +29,7 @@ export default function ReviewPage() {
   const [viewItems, setViewItems] = useState<any[] | null>(null);
   const [viewSession, setViewSession] = useState<any>(null);
   const [localItems, setLocalItems] = useState<Record<string, number>>({});
+  const [showExceptionsOnly, setShowExceptionsOnly] = useState(true);
 
   const fetchSessions = async () => {
     if (!currentRestaurant) return;
@@ -134,6 +136,11 @@ export default function ReviewPage() {
     }
 
     toast.success("Session approved!");
+    if (viewSession?.id === sessionId) {
+      setViewItems(null);
+      setViewSession(null);
+      setLocalItems({});
+    }
     fetchSessions();
   };
 
@@ -143,13 +150,17 @@ export default function ReviewPage() {
       updated_at: new Date().toISOString(),
     }).eq("id", sessionId);
     if (error) toast.error(error.message);
-    else { toast.success("Session sent back"); fetchSessions(); }
+    else {
+      toast.success("Session sent back");
+      if (viewSession?.id === sessionId) { setViewItems(null); setViewSession(null); setLocalItems({}); }
+      fetchSessions();
+    }
   };
 
   const handleView = async (session: any) => {
+    setLocalItems({});
     const { data } = await supabase.from("inventory_session_items").select("*").eq("session_id", session.id);
     
-    // Load PAR guide values for risk preview
     if (currentRestaurant) {
       const { data: guides } = await supabase
         .from("par_guides")
@@ -174,14 +185,20 @@ export default function ReviewPage() {
           }));
           setViewItems(enriched);
           setViewSession(session);
+          // Default to exceptions-only if there are exceptions
+          const hasExceptions = enriched.some(item => {
+            const r = getRisk(Number(item.current_stock), parMap[item.item_name] ?? null);
+            return r.label === "High" || r.label === "Medium";
+          });
+          setShowExceptionsOnly(hasExceptions);
           return;
         }
       }
     }
     
     setViewItems((data || []).map(item => ({ ...item, approved_par: null })));
-    setLocalItems({});
     setViewSession(session);
+    setShowExceptionsOnly(false);
   };
 
   const getLocalStock = (item: any) =>
@@ -204,6 +221,28 @@ export default function ReviewPage() {
       }, {} as Record<string, number>)
     : null;
 
+  // Total suggested order (sum of all "need" values)
+  const totalSuggestedOrder = viewItems
+    ? viewItems.reduce((sum, item) => {
+        const stock = getLocalStock(item);
+        const par = item.approved_par;
+        if (par && par > 0) return sum + Math.max(0, par - stock);
+        return sum;
+      }, 0)
+    : 0;
+
+  // Filtered items for display
+  const displayedItems = (() => {
+    if (!viewItems) return null;
+    if (!showExceptionsOnly) return viewItems;
+    const exceptions = viewItems.filter(item => {
+      const risk = getRisk(Number(item.current_stock), item.approved_par);
+      return risk.label === "High" || risk.label === "Medium";
+    });
+    // Fallback: if no exceptions, show all
+    return exceptions.length > 0 ? exceptions : viewItems;
+  })();
+
   return (
     <div className="space-y-5 animate-fade-in">
       <div className="page-header">
@@ -223,42 +262,73 @@ export default function ReviewPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="space-y-3">
+        <div className="rounded-lg border overflow-hidden divide-y">
           {sessions.map(s => (
-            <Card key={s.id} className="hover:shadow-card transition-all duration-200">
-              <CardContent className="flex items-center justify-between p-4">
-                <div>
-                  <p className="font-semibold text-sm">{s.name}</p>
-                  <p className="text-[11px] text-muted-foreground mt-0.5">{s.inventory_lists?.name} • {new Date(s.updated_at).toLocaleDateString()}</p>
-                </div>
-                <div className="flex gap-2">
-                  <Button size="sm" variant="outline" onClick={() => handleView(s)} className="gap-1.5 h-8 text-xs">
-                    <Eye className="h-3.5 w-3.5" /> View
-                  </Button>
-                  {isManagerOrOwner && (
-                    <>
-                      <Button size="sm" onClick={() => handleApprove(s.id)} className="bg-success hover:bg-success/90 gap-1.5 h-8 text-xs">
-                        <CheckCircle className="h-3.5 w-3.5" /> Approve
-                      </Button>
-                      <Button size="sm" variant="destructive" onClick={() => handleReject(s.id)} className="gap-1.5 h-8 text-xs">
-                        <XCircle className="h-3.5 w-3.5" /> Reject
-                      </Button>
-                    </>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
+            <div key={s.id} className="flex items-center gap-3 px-4 py-3 bg-card hover:bg-muted/20 transition-colors">
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-sm truncate">{s.name}</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {s.inventory_lists?.name} · {new Date(s.updated_at).toLocaleDateString()}
+                </p>
+              </div>
+              <Badge className="bg-primary/10 text-primary border-0 text-[10px] shrink-0">In Review</Badge>
+              <Button size="sm" className="h-8 text-xs gap-1.5 shrink-0" onClick={() => handleView(s)}>
+                <Eye className="h-3 w-3" /> Review
+              </Button>
+              {isManagerOrOwner && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+                      <MoreHorizontal className="h-3.5 w-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => handleApprove(s.id)}>
+                      <CheckCircle className="h-3.5 w-3.5 mr-2 text-success" /> Approve
+                    </DropdownMenuItem>
+                    <DropdownMenuItem className="text-destructive" onClick={() => handleReject(s.id)}>
+                      <XCircle className="h-3.5 w-3.5 mr-2" /> Send back
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+            </div>
           ))}
         </div>
       )}
 
+      {/* Review Dialog — Exception-first */}
       <Dialog open={!!viewItems} onOpenChange={() => { setViewItems(null); setViewSession(null); setLocalItems({}); }}>
-        <DialogContent className="max-w-3xl">
-          <DialogHeader><DialogTitle>{viewSession?.name} — Items</DialogTitle></DialogHeader>
-          
-          {/* Risk summary preview */}
+        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+          {/* Dialog header with Approve button */}
+          <DialogHeader className="shrink-0">
+            <div className="flex items-start justify-between gap-3">
+              <DialogTitle className="text-base">{viewSession?.name} — Review</DialogTitle>
+              {isManagerOrOwner && viewSession && (
+                <div className="flex gap-2 shrink-0">
+                  <Button
+                    size="sm"
+                    className="bg-success hover:bg-success/90 text-success-foreground gap-1.5 h-8 text-xs"
+                    onClick={() => handleApprove(viewSession.id)}
+                  >
+                    <CheckCircle className="h-3.5 w-3.5" /> Approve
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    className="gap-1.5 h-8 text-xs"
+                    onClick={() => handleReject(viewSession.id)}
+                  >
+                    <XCircle className="h-3.5 w-3.5" /> Send back
+                  </Button>
+                </div>
+              )}
+            </div>
+          </DialogHeader>
+
+          {/* Risk summary cards */}
           {viewRiskSummary && (
-            <div className="grid grid-cols-4 gap-2 mb-2">
+            <div className="grid grid-cols-4 gap-2 shrink-0">
               <div className="rounded-lg bg-destructive/10 p-2.5 text-center">
                 <p className="text-base font-bold text-destructive">{viewRiskSummary.red || 0}</p>
                 <p className="text-[10px] font-medium text-destructive uppercase tracking-wide">High</p>
@@ -278,10 +348,30 @@ export default function ReviewPage() {
             </div>
           )}
 
-          <div className="rounded-lg border overflow-hidden">
+          {/* Totals + filter toggles */}
+          <div className="flex items-center justify-between gap-3 shrink-0">
+            <div className="flex items-center gap-1.5">
+              <button
+                className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${showExceptionsOnly ? "bg-destructive/10 text-destructive border border-destructive/20" : "bg-muted/60 text-muted-foreground hover:bg-muted"}`}
+                onClick={() => setShowExceptionsOnly(true)}
+              >Exceptions only</button>
+              <button
+                className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${!showExceptionsOnly ? "bg-primary text-primary-foreground" : "bg-muted/60 text-muted-foreground hover:bg-muted"}`}
+                onClick={() => setShowExceptionsOnly(false)}
+              >Show all</button>
+            </div>
+            {totalSuggestedOrder > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Total need: <span className="font-semibold text-foreground">{totalSuggestedOrder % 1 === 0 ? totalSuggestedOrder : totalSuggestedOrder.toFixed(1)} units</span>
+              </p>
+            )}
+          </div>
+
+          {/* Scrollable table */}
+          <div className="rounded-lg border overflow-hidden overflow-y-auto flex-1">
             <Table>
               <TableHeader>
-                <TableRow className="bg-muted/30">
+                <TableRow className="bg-muted/30 sticky top-0">
                   <TableHead className="text-xs font-semibold">Item</TableHead>
                   <TableHead className="text-xs font-semibold">Category</TableHead>
                   <TableHead className="text-xs font-semibold">Pack Size</TableHead>
@@ -292,7 +382,7 @@ export default function ReviewPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {viewItems?.map(item => {
+                {displayedItems?.map(item => {
                   const stock = getLocalStock(item);
                   const risk = getRisk(stock, item.approved_par);
                   const suggestedOrder = item.approved_par != null && item.approved_par > 0
@@ -308,7 +398,7 @@ export default function ReviewPage() {
                           type="number"
                           inputMode="decimal"
                           min={0}
-                          step={0.01}
+                          step={0.1}
                           className="w-20 h-7 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                           value={localItems[item.id] !== undefined ? localItems[item.id] : item.current_stock}
                           onFocus={(e) => e.target.select()}

@@ -24,23 +24,43 @@ import { toast } from "sonner";
 import {
   Plus, Send, Package, BookOpen, Play, ArrowLeft, Eye, CheckCircle,
   XCircle, ShoppingCart, Copy, Clock, ClipboardCheck, Trash2, ChevronRight, Eraser,
-  Search, SkipForward, EyeOff, Check, ListOrdered, AlertTriangle } from "lucide-react";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+  Search, SkipForward, EyeOff, Check, ListOrdered, AlertTriangle, MoreHorizontal,
+  LayoutGrid, List as ListIcon, TrendingDown } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useCategoryMapping } from "@/hooks/useCategoryMapping";
 
 const defaultCategories = ["Frozen", "Cooler", "Dry"];
 
 // Risk classification helper
-function getRisk(currentStock: number, parLevel: number | null | undefined): { label: string; color: string; bgClass: string; textClass: string } {
+function getRisk(currentStock: number, parLevel: number | null | undefined): { label: string; color: string; bgClass: string; textClass: string; rowBg: string } {
   if (parLevel === null || parLevel === undefined || parLevel <= 0) {
-    return { label: "No PAR", color: "gray", bgClass: "bg-muted/60", textClass: "text-muted-foreground" };
+    return { label: "No PAR", color: "gray", bgClass: "bg-muted/60", textClass: "text-muted-foreground", rowBg: "" };
   }
   const ratio = currentStock / parLevel;
-  if (ratio >= 1.0) return { label: "Low", color: "green", bgClass: "bg-success/10", textClass: "text-success" };
-  if (ratio > 0.5) return { label: "Medium", color: "yellow", bgClass: "bg-warning/10", textClass: "text-warning" };
-  return { label: "High", color: "red", bgClass: "bg-destructive/10", textClass: "text-destructive" };
+  if (ratio >= 1.0) return { label: "Low", color: "green", bgClass: "bg-success/10", textClass: "text-success", rowBg: "" };
+  if (ratio > 0.5) return { label: "Medium", color: "yellow", bgClass: "bg-warning/10", textClass: "text-warning", rowBg: "bg-warning/5" };
+  return { label: "High", color: "red", bgClass: "bg-destructive/10", textClass: "text-destructive", rowBg: "bg-destructive/5" };
 }
+
+// Progress bar helper
+const ProgressBar = ({ counted, total }: { counted: number; total: number }) => {
+  const pct = total > 0 ? Math.round((counted / total) * 100) : 0;
+  return (
+    <div>
+      <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
+        <span>{counted} / {total} counted</span>
+        <span>{pct}%</span>
+      </div>
+      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+        <div
+          className="h-full rounded-full bg-gradient-amber transition-all duration-300"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+};
 
 export default function EnterInventoryPage() {
   const { currentRestaurant } = useRestaurant();
@@ -56,7 +76,7 @@ export default function EnterInventoryPage() {
   const [inProgressSessions, setInProgressSessions] = useState<any[]>([]);
   const [reviewSessions, setReviewSessions] = useState<any[]>([]);
   const [approvedSessions, setApprovedSessions] = useState<any[]>([]);
-  const [sessionStats, setSessionStats] = useState<Record<string, { qty: number; totalValue: number }>>({});
+  const [sessionStats, setSessionStats] = useState<Record<string, { qty: number; totalValue: number; counted: number; total: number }>>({});
   const [approvedFilter, setApprovedFilter] = useState("30");
 
   const [activeSession, setActiveSession] = useState<any>(null);
@@ -91,6 +111,7 @@ export default function EnterInventoryPage() {
   const [savedId, setSavedId] = useState<string | null>(null);
   const [submitConfirmOpen, setSubmitConfirmOpen] = useState(false);
   const [categoryMode, setCategoryMode] = useState<string>("list_order");
+  const [viewToggle, setViewToggle] = useState<"table" | "compact">("table");
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   // Approved PAR data for read-only display during count entry
@@ -100,8 +121,6 @@ export default function EnterInventoryPage() {
   useEffect(() => {
     if (!activeSession || !currentRestaurant) { setApprovedParMap({}); return; }
     const loadApprovedPar = async () => {
-      // Find approved sessions for this list to get latest PAR values
-      // Also load from par_guide_items for the list's par guides
       const { data: guides } = await supabase
         .from("par_guides")
         .select("id")
@@ -110,7 +129,6 @@ export default function EnterInventoryPage() {
 
       if (!guides || guides.length === 0) { setApprovedParMap({}); return; }
 
-      // Get all par guide items from all guides for this list
       const guideIds = guides.map(g => g.id);
       const { data: allParItems } = await supabase
         .from("par_guide_items")
@@ -119,7 +137,6 @@ export default function EnterInventoryPage() {
 
       if (!allParItems || allParItems.length === 0) { setApprovedParMap({}); return; }
 
-      // Use the latest par guide's values (last guide as most recent)
       const map: Record<string, number> = {};
       allParItems.forEach(p => { map[p.item_name] = Number(p.par_level); });
       setApprovedParMap(map);
@@ -164,7 +181,7 @@ export default function EnterInventoryPage() {
     setReviewSessions(filteredRv);
     setApprovedSessions(filteredAp);
 
-    // Fetch item counts + total values for all sessions
+    // Fetch item counts + total values + progress for all sessions
     const allSessions = [...filteredIp, ...filteredRv, ...filteredAp];
     if (allSessions.length > 0) {
       const sessionIds = allSessions.map((s) => s.id);
@@ -173,10 +190,14 @@ export default function EnterInventoryPage() {
         .select("session_id, current_stock, unit_cost")
         .in("session_id", sessionIds);
 
-      const statsMap: Record<string, { qty: number; totalValue: number }> = {};
+      const statsMap: Record<string, { qty: number; totalValue: number; counted: number; total: number }> = {};
       (statsRaw || []).forEach((row) => {
-        if (!statsMap[row.session_id]) statsMap[row.session_id] = { qty: 0, totalValue: 0 };
+        if (!statsMap[row.session_id]) statsMap[row.session_id] = { qty: 0, totalValue: 0, counted: 0, total: 0 };
         statsMap[row.session_id].qty += Number(row.current_stock ?? 0);
+        statsMap[row.session_id].total += 1;
+        if (row.current_stock !== null && Number(row.current_stock) > 0) {
+          statsMap[row.session_id].counted += 1;
+        }
         if (row.current_stock != null && row.unit_cost != null) {
           statsMap[row.session_id].totalValue += Number(row.current_stock) * Number(row.unit_cost);
         }
@@ -211,7 +232,6 @@ export default function EnterInventoryPage() {
     const { data: catItems } = await supabase.from("inventory_catalog_items").select("*")
       .eq("restaurant_id", currentRestaurant.id).eq("inventory_list_id", selectedList);
 
-    // Auto-detect latest PAR guide if none explicitly selected
     let resolvedParItems = parItems;
     if (resolvedParItems.length === 0 && selectedList) {
       const { data: latestGuide } = await supabase
@@ -275,7 +295,6 @@ export default function EnterInventoryPage() {
     ]);
     if (data) setItems(data);
     if (catalogResult.data) setCatalogItems(catalogResult.data);
-    // Sync category mode from the list's active_category_mode
     if (listResult.data?.active_category_mode) {
       const dbMode = listResult.data.active_category_mode;
       if (dbMode === "ai" || dbMode === "custom-categories") setCategoryMode("custom-categories");
@@ -315,12 +334,12 @@ export default function EnterInventoryPage() {
   };
 
   const handleUpdateStock = async (id: string, stock: number) => {
-    const clamped = Math.min(100, Math.max(0, stock));
+    const clamped = Math.max(0, stock);
     setItems(items.map((i) => i.id === id ? { ...i, current_stock: clamped } : i));
   };
 
   const handleUpdatePar = async (id: string, par: number) => {
-    const clamped = Math.min(100, Math.max(0, par));
+    const clamped = Math.max(0, par);
     setItems(items.map((i) => i.id === id ? { ...i, par_level: clamped } : i));
   };
 
@@ -377,19 +396,15 @@ export default function EnterInventoryPage() {
     }
   };
 
-  // Helper: auto-create smart order run + items + notifications on approval
   const autoCreateSmartOrder = async (sessionId: string) => {
     if (!currentRestaurant || !user) return;
     try {
-      // 1. Fetch session to get inventory_list_id
       const { data: session } = await supabase.from("inventory_sessions").select("*").eq("id", sessionId).single();
       if (!session) return;
 
-      // 2. Fetch session items
       const { data: sessionItems } = await supabase.from("inventory_session_items").select("*").eq("session_id", sessionId);
       if (!sessionItems || sessionItems.length === 0) return;
 
-      // 3. Fetch latest par_guide for the list
       const { data: latestGuide } = await supabase.from("par_guides").select("id")
         .eq("restaurant_id", currentRestaurant.id)
         .eq("inventory_list_id", session.inventory_list_id)
@@ -403,7 +418,6 @@ export default function EnterInventoryPage() {
         (guideItems || []).forEach(p => { parMap[p.item_name] = Number(p.par_level); });
       }
 
-      // 4. Compute risk + suggested order per item
       const computed = sessionItems.map(i => {
         const parLevel = parMap[i.item_name] ?? Number(i.par_level);
         const currentStock = Number(i.current_stock ?? 0);
@@ -416,7 +430,6 @@ export default function EnterInventoryPage() {
       const redCount = computed.filter(i => i.risk === "RED").length;
       const yellowCount = computed.filter(i => i.risk === "YELLOW").length;
 
-      // 5. Insert smart_order_runs
       const { data: run, error: runError } = await supabase.from("smart_order_runs").insert({
         restaurant_id: currentRestaurant.id,
         session_id: sessionId,
@@ -426,7 +439,6 @@ export default function EnterInventoryPage() {
       }).select().single();
       if (runError || !run) return;
 
-      // 6. Insert smart_order_run_items
       const runItems = computed.map(i => ({
         run_id: run.id,
         item_name: i.item_name,
@@ -439,7 +451,6 @@ export default function EnterInventoryPage() {
       }));
       await supabase.from("smart_order_run_items").insert(runItems);
 
-      // 7. Fire notifications if RED items exist
       if (redCount > 0 || yellowCount > 0) {
         const { data: prefs } = await supabase.from("notification_preferences")
           .select("*, alert_recipients(user_id)")
@@ -487,10 +498,7 @@ export default function EnterInventoryPage() {
       status: "APPROVED", approved_at: new Date().toISOString(), approved_by: user.id, updated_at: new Date().toISOString()
     }).eq("id", sessionId);
     if (error) { toast.error(error.message); return; }
-
-    // Auto-create smart order run + notifications
     await autoCreateSmartOrder(sessionId);
-
     toast.success("Session approved!");
     fetchSessions();
   };
@@ -502,11 +510,9 @@ export default function EnterInventoryPage() {
   };
 
   const handleView = async (session: any) => {
-    // Load session items
     const { data } = await supabase.from("inventory_session_items").select("*").eq("session_id", session.id);
     
-    // If approved, load PAR guide values for risk display
-    if (session.status === "APPROVED" && currentRestaurant) {
+    if (currentRestaurant) {
       const { data: guides } = await supabase
         .from("par_guides")
         .select("id")
@@ -521,7 +527,6 @@ export default function EnterInventoryPage() {
           .in("par_guide_id", guideIds);
         
         if (parData) {
-          // Enrich items with approved PAR
           const parMap: Record<string, number> = {};
           parData.forEach(p => { parMap[p.item_name] = Number(p.par_level); });
           
@@ -675,7 +680,6 @@ export default function EnterInventoryPage() {
     return true;
   });
 
-  // Sort by mapped order when mappings exist
   if (hasMappings) {
     filteredItems.sort((a, b) => {
       const catA = getItemCategory(a);
@@ -696,7 +700,6 @@ export default function EnterInventoryPage() {
 
   const selectedListName = lists.find((l) => l.id === selectedList)?.name || "";
 
-  // Group items by category for card view
   const groupedItems = filteredItems.reduce<Record<string, any[]>>((acc, item) => {
     const cat = getItemCategory(item);
     if (!acc[cat]) acc[cat] = [];
@@ -704,7 +707,6 @@ export default function EnterInventoryPage() {
     return acc;
   }, {});
 
-  // Sort grouped category keys by mapped sort_order
   const sortedCategoryKeys = hasMappings
     ? Object.keys(groupedItems).sort((a, b) => {
         const sortA = mappedCategories.find(c => c.name === a)?.sort_order ?? 999;
@@ -745,11 +747,14 @@ export default function EnterInventoryPage() {
     }
   };
 
-  // Helper to get approved PAR for an item
   const getApprovedPar = (itemName: string): number | null => {
     const val = approvedParMap[itemName];
     return val !== undefined ? val : null;
   };
+
+  // Progress for active editor
+  const countedItems = items.filter(i => i.current_stock !== null && Number(i.current_stock) > 0).length;
+  const totalItems = items.length;
 
   if (loading && lists.length === 0) {
     return (
@@ -763,11 +768,14 @@ export default function EnterInventoryPage() {
 
   // ─── SESSION EDITOR ────────────────────────────
   if (activeSession) {
+    const useCompactLayout = isCompact || viewToggle === "compact";
+
     return (
       <div className="space-y-0 animate-fade-in pb-24 lg:pb-0">
-        {/* Sticky top bar */}
-        <div className="sticky top-0 z-20 bg-background/95 backdrop-blur-sm border-b pb-3 pt-3 -mx-4 px-4 lg:-mx-0 lg:px-0 lg:border-0 lg:static lg:bg-transparent lg:backdrop-blur-none space-y-3">
-          <div className="hidden lg:block">
+        {/* Layer 1: Identity bar — sticky */}
+        <div className="sticky top-0 z-20 bg-background/95 backdrop-blur-sm border-b -mx-4 px-4 lg:-mx-0 lg:px-0">
+          {/* Breadcrumb — desktop only */}
+          <div className="hidden lg:block pt-3 pb-1">
             <Breadcrumb>
               <BreadcrumbList>
                 <BreadcrumbItem><BreadcrumbLink href="/app/dashboard">Home</BreadcrumbLink></BreadcrumbItem>
@@ -779,129 +787,154 @@ export default function EnterInventoryPage() {
             </Breadcrumb>
           </div>
 
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => { setActiveSession(null); fetchSessions(); }}>
-                <ArrowLeft className="h-4 w-4" />
-              </Button>
-              <div className="min-w-0">
-                <h1 className="text-base lg:text-2xl font-bold tracking-tight truncate">{activeSession.name}</h1>
-                <p className="text-xs lg:text-sm text-muted-foreground truncate">{selectedListName}</p>
+          {/* Identity row */}
+          <div className="flex items-center gap-2 py-2.5">
+            <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => { setActiveSession(null); fetchSessions(); }}>
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <h1 className="text-sm lg:text-base font-bold tracking-tight truncate">{activeSession.name}</h1>
+                <Badge className="bg-warning/10 text-warning border-0 text-[10px] shrink-0">In progress</Badge>
               </div>
+              <p className="text-[11px] text-muted-foreground truncate">{selectedListName} · {countedItems}/{totalItems} counted</p>
             </div>
-            <Badge className="bg-warning/10 text-warning border-0 text-[10px] shrink-0">In progress</Badge>
+
+            {/* Autosave status */}
+            <div className="shrink-0 min-w-[60px] text-right">
+              {savingId && <span className="text-[10px] text-muted-foreground animate-pulse">Saving…</span>}
+              {!savingId && savedId && <span className="text-[10px] text-success flex items-center gap-0.5 justify-end"><Check className="h-3 w-3" /> Saved</span>}
+            </div>
+
+            {/* Submit button — always visible on desktop */}
+            <div className="hidden lg:flex items-center gap-2 shrink-0">
+              <Button onClick={handleSubmitForReview} className="bg-gradient-amber shadow-amber gap-2 h-9 text-sm" disabled={items.length === 0}>
+                <Send className="h-3.5 w-3.5" /> Submit for Review
+              </Button>
+            </div>
+          </div>
+
+          {/* Layer 2: Toolbar */}
+          <div className="flex items-center gap-2 pb-2.5 flex-wrap lg:flex-nowrap">
+            {/* Search */}
+            <div className="relative flex-1 min-w-32">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search..." className="pl-8 h-8 text-sm" />
+            </div>
+
+            {/* Category chips */}
+            <div className="flex gap-1 overflow-x-auto no-scrollbar flex-1">
+              <button
+                className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${filterCategory === "all" ? "bg-primary text-primary-foreground" : "bg-muted/60 text-muted-foreground hover:bg-muted"}`}
+                onClick={() => setFilterCategory("all")}
+              >All</button>
+              {allCategories.map(c => (
+                <button
+                  key={c}
+                  className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${filterCategory === c ? "bg-primary text-primary-foreground" : "bg-muted/60 text-muted-foreground hover:bg-muted"}`}
+                  onClick={() => setFilterCategory(c)}
+                >{c}</button>
+              ))}
+            </div>
+
+            {/* Uncounted filter */}
+            <button
+              className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${showOnlyEmpty ? "bg-warning/20 text-warning border border-warning/30" : "bg-muted/60 text-muted-foreground hover:bg-muted"}`}
+              onClick={() => setShowOnlyEmpty(!showOnlyEmpty)}
+            >Uncounted</button>
+
+            {/* Category mode */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs shrink-0">
-                  <ListOrdered className="h-3.5 w-3.5" />
-                  {categoryMode === "list_order" ? "List Order" : categoryMode === "custom-categories" ? "Custom Categories" : "My Categories"}
+                <Button variant="outline" size="sm" className="h-8 gap-1 text-[11px] shrink-0 hidden lg:flex">
+                  <ListOrdered className="h-3 w-3" />
+                  {categoryMode === "list_order" ? "List Order" : categoryMode === "custom-categories" ? "AI Categories" : "My Categories"}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => { setCategoryMode("list_order"); setFilterCategory("all"); }}>
-                  List Order (no categories)
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => { setCategoryMode("custom-categories"); setFilterCategory("all"); }}>
-                  Custom Categories (AI)
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => { setCategoryMode("my-categories"); setFilterCategory("all"); }}>
-                  My Categories (User)
-                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { setCategoryMode("list_order"); setFilterCategory("all"); }}>List Order</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { setCategoryMode("custom-categories"); setFilterCategory("all"); }}>Custom Categories (AI)</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { setCategoryMode("my-categories"); setFilterCategory("all"); }}>My Categories</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-          </div>
 
-          {/* Search + filters */}
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search..." className="pl-8 h-9 text-sm" />
-            </div>
-            <Button
-              size="sm"
-              variant={showOnlyEmpty ? "default" : "outline"}
-              className="h-9 gap-1 text-xs shrink-0"
-              onClick={() => setShowOnlyEmpty(!showOnlyEmpty)}
-            >
-              <EyeOff className="h-3 w-3" /> Empty
-            </Button>
-            <Button size="sm" variant="outline" className="h-9 gap-1 text-xs shrink-0" onClick={jumpToNextEmpty}>
-              <SkipForward className="h-3 w-3" /> Next
-            </Button>
-          </div>
-
-          {/* Category chips */}
-          <div className="flex gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
-            <button
-              className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${filterCategory === "all" ? "bg-primary text-primary-foreground" : "bg-muted/60 text-muted-foreground hover:bg-muted"}`}
-              onClick={() => setFilterCategory("all")}
-            >All</button>
-            {allCategories.map(c => (
+            {/* View toggle — desktop only */}
+            <div className="hidden lg:flex items-center border rounded-md overflow-hidden h-8">
               <button
-                key={c}
-                className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${filterCategory === c ? "bg-primary text-primary-foreground" : "bg-muted/60 text-muted-foreground hover:bg-muted"}`}
-                onClick={() => setFilterCategory(c)}
-              >{c}</button>
-            ))}
-          </div>
+                className={`px-2 h-full transition-colors ${viewToggle === "table" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted/50"}`}
+                onClick={() => setViewToggle("table")}
+              ><ListIcon className="h-3.5 w-3.5" /></button>
+              <button
+                className={`px-2 h-full transition-colors ${viewToggle === "compact" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted/50"}`}
+                onClick={() => setViewToggle("compact")}
+              ><LayoutGrid className="h-3.5 w-3.5" /></button>
+            </div>
 
-          {/* Desktop-only actions */}
-          <div className="hidden lg:flex gap-2">
-            <Button variant="outline" className="gap-2 text-xs h-9" onClick={() => setClearEntriesSessionId(activeSession.id)}>
-              <Eraser className="h-3.5 w-3.5" /> Clear entries
-            </Button>
-            <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-              <DialogTrigger asChild>
-                <Button size="sm" variant="outline" className="gap-1.5 h-9"><Plus className="h-3.5 w-3.5" /> Add Item</Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader><DialogTitle>Add Item</DialogTitle></DialogHeader>
-                <div className="space-y-3">
-                  <div className="space-y-1"><Label>Item Name</Label><Input value={newItem.item_name} onChange={(e) => setNewItem({ ...newItem, item_name: e.target.value })} className="h-10" /></div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1"><Label>Category</Label>
-                      <Select value={newItem.category} onValueChange={(v) => setNewItem({ ...newItem, category: v })}>
-                        <SelectTrigger className="h-10"><SelectValue /></SelectTrigger>
-                        <SelectContent>{defaultCategories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-1"><Label>Unit</Label><Input value={newItem.unit} onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })} placeholder="lbs, packs..." className="h-10" /></div>
-                  </div>
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="space-y-1"><Label>Stock</Label><Input type="number" value={newItem.current_stock} onChange={(e) => setNewItem({ ...newItem, current_stock: +e.target.value })} className="h-10" /></div>
-                    <div className="space-y-1"><Label>PAR Level</Label><Input type="number" value={newItem.par_level} onChange={(e) => setNewItem({ ...newItem, par_level: +e.target.value })} className="h-10" /></div>
-                    <div className="space-y-1"><Label>Unit Cost</Label><Input type="number" value={newItem.unit_cost} onChange={(e) => setNewItem({ ...newItem, unit_cost: +e.target.value })} className="h-10" /></div>
-                  </div>
-                  <Button onClick={handleAddItem} className="w-full bg-gradient-amber">Add</Button>
-                </div>
-              </DialogContent>
-            </Dialog>
-            {catalogItems.length > 0 &&
-              <Dialog open={catalogOpen} onOpenChange={setCatalogOpen}>
+            {/* Jump + Add — desktop */}
+            <div className="hidden lg:flex gap-1.5">
+              <Button size="sm" variant="outline" className="h-8 gap-1 text-[11px]" onClick={jumpToNextEmpty}>
+                <SkipForward className="h-3 w-3" /> Next
+              </Button>
+              <Button variant="outline" className="gap-1.5 text-[11px] h-8" onClick={() => setClearEntriesSessionId(activeSession.id)}>
+                <Eraser className="h-3 w-3" /> Clear
+              </Button>
+              <Dialog open={createOpen} onOpenChange={setCreateOpen}>
                 <DialogTrigger asChild>
-                  <Button size="sm" variant="outline" className="gap-1.5 h-9"><BookOpen className="h-3.5 w-3.5" /> From Catalog</Button>
+                  <Button size="sm" variant="outline" className="gap-1 h-8 text-[11px]"><Plus className="h-3 w-3" /> Add</Button>
                 </DialogTrigger>
-                <DialogContent className="max-w-lg">
-                  <DialogHeader><DialogTitle>Add from Catalog</DialogTitle></DialogHeader>
-                  <div className="max-h-80 overflow-y-auto space-y-0.5">
-                    {catalogItems.map((ci) =>
-                      <div key={ci.id} className="flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-muted/50 transition-colors">
-                        <div>
-                          <p className="text-sm font-medium">{ci.item_name}</p>
-                          <p className="text-[11px] text-muted-foreground">{[ci.category, ci.unit, ci.vendor_name].filter(Boolean).join(" · ")}</p>
-                        </div>
-                        <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => handleAddFromCatalog(ci)}><Plus className="h-4 w-4" /></Button>
+                <DialogContent>
+                  <DialogHeader><DialogTitle>Add Item</DialogTitle></DialogHeader>
+                  <div className="space-y-3">
+                    <div className="space-y-1"><Label>Item Name</Label><Input value={newItem.item_name} onChange={(e) => setNewItem({ ...newItem, item_name: e.target.value })} className="h-10" /></div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1"><Label>Category</Label>
+                        <Select value={newItem.category} onValueChange={(v) => setNewItem({ ...newItem, category: v })}>
+                          <SelectTrigger className="h-10"><SelectValue /></SelectTrigger>
+                          <SelectContent>{defaultCategories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                        </Select>
                       </div>
-                    )}
+                      <div className="space-y-1"><Label>Unit</Label><Input value={newItem.unit} onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })} placeholder="lbs, packs..." className="h-10" /></div>
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="space-y-1"><Label>Stock</Label><Input type="number" value={newItem.current_stock} onChange={(e) => setNewItem({ ...newItem, current_stock: +e.target.value })} className="h-10" /></div>
+                      <div className="space-y-1"><Label>PAR Level</Label><Input type="number" value={newItem.par_level} onChange={(e) => setNewItem({ ...newItem, par_level: +e.target.value })} className="h-10" /></div>
+                      <div className="space-y-1"><Label>Unit Cost</Label><Input type="number" value={newItem.unit_cost} onChange={(e) => setNewItem({ ...newItem, unit_cost: +e.target.value })} className="h-10" /></div>
+                    </div>
+                    <Button onClick={handleAddItem} className="w-full bg-gradient-amber">Add</Button>
                   </div>
                 </DialogContent>
               </Dialog>
-            }
-            <Button onClick={handleSubmitForReview} className="bg-gradient-amber shadow-amber gap-2 ml-auto" disabled={items.length === 0}>
-              <Send className="h-4 w-4" /> Submit for Review
-            </Button>
+              {catalogItems.length > 0 &&
+                <Dialog open={catalogOpen} onOpenChange={setCatalogOpen}>
+                  <DialogTrigger asChild>
+                    <Button size="sm" variant="outline" className="gap-1 h-8 text-[11px]"><BookOpen className="h-3 w-3" /> Catalog</Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-lg">
+                    <DialogHeader><DialogTitle>Add from Catalog</DialogTitle></DialogHeader>
+                    <div className="max-h-80 overflow-y-auto space-y-0.5">
+                      {catalogItems.map((ci) =>
+                        <div key={ci.id} className="flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-muted/50 transition-colors">
+                          <div>
+                            <p className="text-sm font-medium">{ci.item_name}</p>
+                            <p className="text-[11px] text-muted-foreground">{[ci.category, ci.unit, ci.vendor_name].filter(Boolean).join(" · ")}</p>
+                          </div>
+                          <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => handleAddFromCatalog(ci)}><Plus className="h-4 w-4" /></Button>
+                        </div>
+                      )}
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              }
+            </div>
           </div>
         </div>
+
+        {/* Progress bar for desktop */}
+        {!isCompact && totalItems > 0 && (
+          <div className="mt-3 mb-2">
+            <ProgressBar counted={countedItems} total={totalItems} />
+          </div>
+        )}
 
         {/* Main content */}
         {filteredItems.length === 0 ? (
@@ -912,9 +945,11 @@ export default function EnterInventoryPage() {
               <p className="empty-state-description">Add items manually or from your catalog to start counting.</p>
             </CardContent>
           </Card>
-        ) : isCompact ? (
-          /* ─── CARD LAYOUT (tablet/mobile) ─── */
+        ) : useCompactLayout ? (
+          /* ─── CARD LAYOUT (tablet/mobile or compact toggle) ─── */
           <div className="space-y-5 mt-4">
+            {/* Progress bar — mobile */}
+            {totalItems > 0 && <ProgressBar counted={countedItems} total={totalItems} />}
             {sortedCategoryKeys.map((category) => {
               const catItems = groupedItems[category];
               return (
@@ -924,8 +959,12 @@ export default function EnterInventoryPage() {
                   {catItems.map((item, idx) => {
                     const globalIdx = filteredItems.indexOf(item);
                     const approvedPar = getApprovedPar(item.item_name);
+                    const need = approvedPar !== null && Number(item.current_stock) !== null
+                      ? Math.max(0, approvedPar - Number(item.current_stock ?? 0))
+                      : null;
+                    const risk = getRisk(Number(item.current_stock ?? 0), approvedPar);
                     return (
-                      <Card key={item.id} className="border shadow-sm">
+                      <Card key={item.id} className={`border shadow-sm ${risk.rowBg}`}>
                         <CardContent className="p-3 space-y-2">
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0 flex-1">
@@ -935,20 +974,20 @@ export default function EnterInventoryPage() {
                               </p>
                             </div>
                             <div className="flex items-center gap-1.5 shrink-0">
+                              <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px]`}>{risk.label}</Badge>
                               {savingId === item.id && <span className="text-[10px] text-muted-foreground animate-pulse">Saving…</span>}
                               {savedId === item.id && <Check className="h-3.5 w-3.5 text-success" />}
                             </div>
                           </div>
                           <div className="flex items-center gap-3">
                             <div className="flex-1">
-                              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Count</label>
+                              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">On Hand</label>
                               <Input
                                 ref={el => { inputRefs.current[item.id] = el; }}
                                 inputMode="decimal"
                                 type="number"
                                 min={0}
-                                max={100}
-                                step={0.01}
+                                step={0.1}
                                 value={item.current_stock == null ? "" : String(item.current_stock)}
                                 onFocus={(e) => e.target.select()}
                                 onChange={(e) => {
@@ -966,6 +1005,14 @@ export default function EnterInventoryPage() {
                                 {approvedPar !== null ? approvedPar : "—"}
                               </p>
                             </div>
+                            {need !== null && need > 0 && (
+                              <div className="shrink-0 text-center">
+                                <label className="text-[10px] font-medium text-warning uppercase tracking-wide">Need</label>
+                                <p className="h-12 flex items-center justify-center text-lg font-mono text-warning font-semibold">
+                                  {need % 1 === 0 ? need : need.toFixed(1)}
+                                </p>
+                              </div>
+                            )}
                           </div>
                         </CardContent>
                       </Card>
@@ -978,48 +1025,64 @@ export default function EnterInventoryPage() {
           </div>
         ) : (
           /* ─── TABLE LAYOUT (desktop) ─── */
-          <Card className="overflow-hidden border shadow-sm mt-4">
+          <Card className="overflow-hidden border shadow-sm mt-3">
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted/30">
                   <TableHead className="text-xs font-semibold">Item</TableHead>
-                  <TableHead className="text-xs font-semibold">Category</TableHead>
-                  <TableHead className="text-xs font-semibold">Unit</TableHead>
-                  <TableHead className="text-xs font-semibold">Pack Size</TableHead>
-                  <TableHead className="text-xs font-semibold">Current Stock</TableHead>
-                  <TableHead className="text-xs font-semibold text-muted-foreground">PAR Level</TableHead>
+                  <TableHead className="text-xs font-semibold w-28">On Hand</TableHead>
+                  <TableHead className="text-xs font-semibold w-20">PAR</TableHead>
+                  <TableHead className="text-xs font-semibold w-20">Need</TableHead>
+                  <TableHead className="text-xs font-semibold w-24">Status</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredItems.map((item, idx) => {
                   const approvedPar = getApprovedPar(item.item_name);
+                  const currentStock = Number(item.current_stock ?? 0);
+                  const need = approvedPar !== null ? Math.max(0, approvedPar - currentStock) : null;
+                  const risk = getRisk(currentStock, approvedPar);
                   return (
-                    <TableRow key={item.id} className="hover:bg-muted/20 transition-colors">
-                      <TableCell className="font-medium text-sm">{item.item_name}</TableCell>
-                      <TableCell><Badge variant="secondary" className="text-[10px] font-normal">{getItemCategory(item)}</Badge></TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{item.unit}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
+                    <TableRow key={item.id} className={`transition-colors ${risk.rowBg} hover:brightness-[0.97]`}>
                       <TableCell>
-                        <Input
-                          ref={el => { inputRefs.current[item.id] = el; }}
-                          type="number"
-                          inputMode="decimal"
-                          min={0}
-                          max={100}
-                          step={0.01}
-                          value={item.current_stock == null ? "" : String(item.current_stock)}
-                          onFocus={(e) => e.target.select()}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            handleUpdateStock(item.id, val === "" ? 0 : parseFloat(val) || 0);
-                          }}
-                          onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
-                          onKeyDown={(e) => handleKeyDown(e, idx, "stock")}
-                          className="w-20 h-8 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                        />
+                        <p className="font-medium text-sm leading-tight">{item.item_name}</p>
+                        {item.pack_size && <p className="text-[11px] text-muted-foreground mt-0.5">{item.pack_size}</p>}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            ref={el => { inputRefs.current[item.id] = el; }}
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            step={0.1}
+                            value={item.current_stock == null ? "" : String(item.current_stock)}
+                            onFocus={(e) => e.target.select()}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              handleUpdateStock(item.id, val === "" ? 0 : parseFloat(val) || 0);
+                            }}
+                            onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
+                            onKeyDown={(e) => handleKeyDown(e, idx, "stock")}
+                            className="w-20 h-8 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                          />
+                          {savingId === item.id && <span className="text-[10px] text-muted-foreground animate-pulse">…</span>}
+                          {savedId === item.id && <Check className="h-3 w-3 text-success" />}
+                        </div>
                       </TableCell>
                       <TableCell className="font-mono text-sm text-muted-foreground">
-                        {approvedPar !== null ? approvedPar : <span className="text-muted-foreground/50 text-xs">—</span>}
+                        {approvedPar !== null ? approvedPar : <span className="text-muted-foreground/40">—</span>}
+                      </TableCell>
+                      <TableCell>
+                        {need !== null && need > 0
+                          ? <span className="font-mono text-sm font-semibold text-destructive">{need % 1 === 0 ? need : need.toFixed(1)}</span>
+                          : <span className="text-muted-foreground/40 text-sm">—</span>
+                        }
+                      </TableCell>
+                      <TableCell>
+                        <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px]`}>
+                          {risk.label}
+                        </Badge>
                       </TableCell>
                     </TableRow>
                   );
@@ -1074,151 +1137,7 @@ export default function EnterInventoryPage() {
     );
   }
 
-  // ─── MAIN DASHBOARD: 3 STACKED CARDS ──────────
-  const renderSessionCard = (s: any, type: "inprogress" | "review" | "approved") => {
-    const stats = sessionStats[s.id];
-    const qtyLabel = stats && stats.qty > 0
-      ? `${stats.qty % 1 === 0 ? stats.qty : stats.qty.toFixed(1)} cases`
-      : null;
-    const valueLabel = stats && stats.totalValue > 0 ? `$${stats.totalValue.toFixed(2)}` : null;
-
-    if (isCompact) {
-      return (
-        <Card key={s.id} className="border shadow-sm">
-          <CardContent className="p-4 space-y-3">
-            <div className="flex items-start justify-between">
-              <div className="min-w-0 flex-1">
-                <p className="font-semibold text-sm truncate">{s.name}</p>
-                <p className="text-[11px] text-muted-foreground">{s.inventory_lists?.name}</p>
-                <p className="text-[10px] text-muted-foreground mt-0.5">
-                  {type === "approved" && s.approved_at ? new Date(s.approved_at).toLocaleDateString() : new Date(s.updated_at).toLocaleDateString()}
-                  {qtyLabel ? ` • ${qtyLabel}` : ""}
-                  {valueLabel ? ` • ${valueLabel}` : ""}
-                </p>
-              </div>
-              <Badge className={`shrink-0 text-[10px] border-0 ${
-                type === "inprogress" ? "bg-warning/10 text-warning" :
-                type === "review" ? "bg-primary/10 text-primary" :
-                "bg-success/10 text-success"
-              }`}>
-                {type === "inprogress" ? "In progress" : type === "review" ? "Review" : "Approved"}
-              </Badge>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {type === "inprogress" && (
-                <>
-                  <Button size="sm" className="bg-gradient-amber gap-1.5 h-10 text-xs flex-1" onClick={() => openEditor(s)}>Continue</Button>
-                  <Button size="sm" variant="outline" className="gap-1 h-10 text-xs" onClick={() => setClearEntriesSessionId(s.id)}>
-                    <Eraser className="h-3 w-3" /> Clear
-                  </Button>
-                  <Button size="sm" variant="ghost" className="h-10 w-10 p-0 text-muted-foreground hover:text-destructive" onClick={() => setDeleteSessionId(s.id)}>
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </>
-              )}
-              {type === "review" && (
-                <>
-                  <Button size="sm" variant="outline" className="gap-1.5 h-10 text-xs flex-1" onClick={() => handleView(s)}>
-                    <Eye className="h-3.5 w-3.5" /> View
-                  </Button>
-                  {isManagerOrOwner && (
-                    <>
-                      <Button size="sm" className="bg-success hover:bg-success/90 gap-1.5 h-10 text-xs text-success-foreground flex-1" onClick={() => handleApprove(s.id)}>
-                        <CheckCircle className="h-3.5 w-3.5" /> Approve
-                      </Button>
-                      <Button size="sm" variant="destructive" className="gap-1.5 h-10 text-xs" onClick={() => handleReject(s.id)}>
-                        <XCircle className="h-3.5 w-3.5" />
-                      </Button>
-                    </>
-                  )}
-                </>
-              )}
-              {type === "approved" && (
-                <>
-                  <Button size="sm" variant="outline" className="gap-1.5 h-10 text-xs flex-1" onClick={() => handleView(s)}>
-                    <Eye className="h-3.5 w-3.5" /> View
-                  </Button>
-                  <Button size="sm" variant="outline" className="gap-1.5 h-10 text-xs" onClick={() => handleDuplicate(s)}>
-                    <Copy className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button size="sm" className="bg-gradient-amber gap-1.5 h-10 text-xs flex-1" onClick={() => openSmartOrderModal(s)}>
-                    <ShoppingCart className="h-3.5 w-3.5" /> Smart Order
-                  </Button>
-                </>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      );
-    }
-
-    // Desktop row layout
-    return (
-      <div key={s.id} className="flex items-center justify-between py-3 px-4 rounded-lg border bg-muted/20">
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium">{s.name}</p>
-          <p className="text-[11px] text-muted-foreground">
-            {s.inventory_lists?.name}
-            {type === "approved" && s.approved_at ? ` • ${new Date(s.approved_at).toLocaleDateString()}` : ` • ${new Date(s.updated_at).toLocaleDateString()}`}
-            {qtyLabel ? ` • ${qtyLabel}` : ""}
-            {valueLabel ? ` • ${valueLabel}` : ""}
-          </p>
-        </div>
-        <Badge className={`text-[10px] border-0 ${
-          type === "inprogress" ? "bg-warning/10 text-warning" :
-          type === "review" ? "bg-primary/10 text-primary" :
-          "bg-success/10 text-success"
-        }`}>
-          {type === "inprogress" ? "In progress" : type === "review" ? "Ready for review" : "Approved"}
-        </Badge>
-        <div className="flex items-center gap-2 ml-4">
-          {type === "inprogress" && (
-            <>
-              <Button size="sm" className="bg-gradient-amber gap-1.5 h-8 text-xs" onClick={() => openEditor(s)}>Continue</Button>
-              <Button size="sm" variant="outline" className="gap-1 h-8 text-xs" onClick={() => setClearEntriesSessionId(s.id)}>
-                <Eraser className="h-3 w-3" /> Clear
-              </Button>
-              <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-muted-foreground hover:text-destructive" onClick={() => setDeleteSessionId(s.id)}>
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            </>
-          )}
-          {type === "review" && (
-            <>
-              <Button size="sm" variant="outline" className="gap-1.5 h-8 text-xs" onClick={() => handleView(s)}>
-                <Eye className="h-3.5 w-3.5" /> View
-              </Button>
-              {isManagerOrOwner && (
-                <>
-                  <Button size="sm" className="bg-success hover:bg-success/90 gap-1.5 h-8 text-xs text-success-foreground" onClick={() => handleApprove(s.id)}>
-                    <CheckCircle className="h-3.5 w-3.5" /> Approve
-                  </Button>
-                  <Button size="sm" variant="destructive" className="gap-1.5 h-8 text-xs" onClick={() => handleReject(s.id)}>
-                    <XCircle className="h-3.5 w-3.5" /> Reject
-                  </Button>
-                </>
-              )}
-            </>
-          )}
-          {type === "approved" && (
-            <>
-              <Button size="sm" variant="outline" className="gap-1.5 h-8 text-xs" onClick={() => handleView(s)}>
-                <Eye className="h-3.5 w-3.5" /> View
-              </Button>
-              <Button size="sm" variant="outline" className="gap-1.5 h-8 text-xs" onClick={() => handleDuplicate(s)}>
-                <Copy className="h-3.5 w-3.5" /> Duplicate
-              </Button>
-              <Button size="sm" className="bg-gradient-amber gap-1.5 h-8 text-xs" onClick={() => openSmartOrderModal(s)}>
-                <ShoppingCart className="h-3.5 w-3.5" /> Create Smart Order
-              </Button>
-            </>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  // Compute risk summary for view dialog (approved sessions)
+  // ─── MAIN DASHBOARD: COMMAND CENTER ──────────
   const viewRiskSummary = viewItems && viewSession?.status === "APPROVED"
     ? viewItems.reduce((acc, item) => {
         const risk = getRisk(Number(item.current_stock), item.approved_par);
@@ -1228,7 +1147,7 @@ export default function EnterInventoryPage() {
     : null;
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="space-y-5 animate-fade-in">
       <Breadcrumb>
         <BreadcrumbList>
           <BreadcrumbItem><BreadcrumbLink href="/app/dashboard">Home</BreadcrumbLink></BreadcrumbItem>
@@ -1238,82 +1157,222 @@ export default function EnterInventoryPage() {
       </Breadcrumb>
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h1 className="text-xl lg:text-2xl font-bold tracking-tight">Inventory management</h1>
-        <Button className="bg-gradient-amber shadow-amber gap-2 h-10" onClick={() => setStartOpen(true)}>
-          <Play className="h-4 w-4" /> Start inventory
-        </Button>
-      </div>
-
-      {/* CARD 1: In Progress */}
-      <Card className="border shadow-sm">
-        <CardHeader className="flex flex-row items-center justify-between pb-3 gap-2">
-          <CardTitle className="text-base font-semibold shrink-0">In progress</CardTitle>
+        <div>
+          <h1 className="text-xl lg:text-2xl font-bold tracking-tight">Inventory</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">Manage your counts, reviews, and history</p>
+        </div>
+        <div className="flex items-center gap-2">
           <Select value={selectedList} onValueChange={setSelectedList}>
-            <SelectTrigger className="h-8 w-40 lg:w-48 text-xs"><SelectValue placeholder="Inventory List" /></SelectTrigger>
+            <SelectTrigger className="h-9 w-40 lg:w-48 text-xs"><SelectValue placeholder="Inventory List" /></SelectTrigger>
             <SelectContent>
               {lists.map((l) => <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>)}
             </SelectContent>
           </Select>
-        </CardHeader>
-        <CardContent className="pt-0">
-          {inProgressSessions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-10 text-center">
-              <Clock className="h-10 w-10 text-muted-foreground/20 mb-3" />
-              <p className="text-sm text-muted-foreground">No inventory in progress</p>
-            </div>
-          ) : (
-            <div className={`space-y-2 ${isCompact ? "grid gap-3 sm:grid-cols-2" : ""}`}>
-              {inProgressSessions.map(s => renderSessionCard(s, "inprogress"))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+          <Button className="bg-gradient-amber shadow-amber gap-2 h-9" onClick={() => setStartOpen(true)}>
+            <Play className="h-4 w-4" /> Start count
+          </Button>
+        </div>
+      </div>
 
-      {/* CARD 2: Review */}
-      <Card className="border shadow-sm">
-        <CardHeader className="flex flex-row items-center justify-between pb-3">
-          <CardTitle className="text-base font-semibold">Review</CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          {reviewSessions.length === 0 ? (
-            <div className="text-center items-center justify-center flex flex-row py-0">
-              <ClipboardCheck className="h-10 w-10 text-muted-foreground/20 mb-3" />
-              <p className="text-sm text-muted-foreground">No inventory</p>
-            </div>
-          ) : (
-            <div className={`space-y-2 ${isCompact ? "grid gap-3 sm:grid-cols-2" : ""}`}>
-              {reviewSessions.map(s => renderSessionCard(s, "review"))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      {/* ── SECTION A: TODAY — In Progress ── */}
+      <div>
+        <p className="section-label mb-2">Today's count</p>
+        {inProgressSessions.length === 0 ? (
+          <Card className="border shadow-sm">
+            <CardContent className="py-10 text-center">
+              <Clock className="h-10 w-10 text-muted-foreground/20 mb-3 mx-auto" />
+              <p className="text-sm font-medium text-muted-foreground">No inventory in progress</p>
+              <p className="text-xs text-muted-foreground/70 mt-1">Start a count to begin tracking today's inventory</p>
+              <Button className="bg-gradient-amber shadow-amber gap-2 mt-4" onClick={() => setStartOpen(true)}>
+                <Play className="h-4 w-4" /> Start inventory
+              </Button>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-3">
+            {/* Primary session — featured card */}
+            {(() => {
+              const s = inProgressSessions[0];
+              const stats = sessionStats[s.id];
+              const counted = stats?.counted ?? 0;
+              const total = stats?.total ?? 0;
+              return (
+                <Card key={s.id} className="border shadow-sm overflow-hidden">
+                  <CardContent className="p-0">
+                    {/* Session header */}
+                    <div className="flex items-start justify-between p-4 pb-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <p className="font-semibold text-sm truncate">{s.name}</p>
+                          <Badge className="bg-warning/10 text-warning border-0 text-[10px] shrink-0">In Progress</Badge>
+                        </div>
+                        <p className="text-[11px] text-muted-foreground mt-0.5">{s.inventory_lists?.name}</p>
+                      </div>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0"><MoreHorizontal className="h-3.5 w-3.5" /></Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => setClearEntriesSessionId(s.id)}>
+                            <Eraser className="h-3.5 w-3.5 mr-2" /> Clear entries
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem className="text-destructive" onClick={() => setDeleteSessionId(s.id)}>
+                            <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete session
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
 
-      {/* CARD 3: Approved */}
-      <Card className="border shadow-sm">
-        <CardHeader className="flex flex-row items-center justify-between pb-3 gap-2">
-          <CardTitle className="text-base font-semibold shrink-0">Approved</CardTitle>
+                    {/* Progress bar */}
+                    {total > 0 && (
+                      <div className="px-4 pb-3">
+                        <ProgressBar counted={counted} total={total} />
+                      </div>
+                    )}
+
+                    {/* Actions */}
+                    <div className="flex gap-2 px-4 pb-4">
+                      <Button className="bg-gradient-amber shadow-amber gap-2 flex-1" onClick={() => openEditor(s)}>
+                        <ChevronRight className="h-4 w-4" /> Continue count
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })()}
+
+            {/* Additional sessions — compact rows */}
+            {inProgressSessions.slice(1).map(s => {
+              const stats = sessionStats[s.id];
+              const counted = stats?.counted ?? 0;
+              const total = stats?.total ?? 0;
+              return (
+                <div key={s.id} className="flex items-center gap-3 py-2.5 px-4 rounded-lg border bg-card">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{s.name}</p>
+                    <p className="text-[11px] text-muted-foreground">{s.inventory_lists?.name} · {counted}/{total} counted</p>
+                  </div>
+                  <Button size="sm" className="bg-gradient-amber gap-1.5 h-8 text-xs shrink-0" onClick={() => openEditor(s)}>Continue</Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0"><MoreHorizontal className="h-3.5 w-3.5" /></Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => setClearEntriesSessionId(s.id)}><Eraser className="h-3.5 w-3.5 mr-2" />Clear entries</DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem className="text-destructive" onClick={() => setDeleteSessionId(s.id)}><Trash2 className="h-3.5 w-3.5 mr-2" />Delete</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── SECTION B: NEEDS REVIEW — Manager only ── */}
+      {isManagerOrOwner && reviewSessions.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <p className="section-label">Needs review</p>
+            <Badge variant="secondary" className="text-[10px] h-4 px-1.5">{reviewSessions.length}</Badge>
+          </div>
+          <div className="rounded-lg border overflow-hidden divide-y">
+            {reviewSessions.map(s => {
+              const stats = sessionStats[s.id];
+              const qtyLabel = stats?.qty ? `${stats.qty % 1 === 0 ? stats.qty : stats.qty.toFixed(1)} cases` : null;
+              return (
+                <div key={s.id} className="flex items-center gap-3 px-4 py-3 bg-card hover:bg-muted/20 transition-colors">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold truncate">{s.name}</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      {s.inventory_lists?.name} · {new Date(s.updated_at).toLocaleDateString()}
+                      {qtyLabel ? ` · ${qtyLabel}` : ""}
+                    </p>
+                  </div>
+                  <Button size="sm" className="h-8 text-xs gap-1.5 shrink-0" onClick={() => handleView(s)}>
+                    <Eye className="h-3 w-3" /> Review
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0"><MoreHorizontal className="h-3.5 w-3.5" /></Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => handleApprove(s.id)}>
+                        <CheckCircle className="h-3.5 w-3.5 mr-2 text-success" /> Approve
+                      </DropdownMenuItem>
+                      <DropdownMenuItem className="text-destructive" onClick={() => handleReject(s.id)}>
+                        <XCircle className="h-3.5 w-3.5 mr-2" /> Send back
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── SECTION C: HISTORY — Approved ── */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <p className="section-label">History</p>
           <Select value={approvedFilter} onValueChange={setApprovedFilter}>
-            <SelectTrigger className="h-8 w-36 text-xs"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="h-7 w-32 text-[11px]"><SelectValue /></SelectTrigger>
             <SelectContent>
+              <SelectItem value="7">Last 7 days</SelectItem>
               <SelectItem value="30">Last 30 days</SelectItem>
               <SelectItem value="60">Last 60 days</SelectItem>
               <SelectItem value="90">Last 90 days</SelectItem>
             </SelectContent>
           </Select>
-        </CardHeader>
-        <CardContent className="pt-0">
-          {approvedSessions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-10 text-center">
-              <CheckCircle className="h-10 w-10 text-muted-foreground/20 mb-3" />
-              <p className="text-sm text-muted-foreground">No inventory</p>
-            </div>
-          ) : (
-            <div className={`space-y-2 ${isCompact ? "grid gap-3 sm:grid-cols-2" : ""}`}>
-              {approvedSessions.map(s => renderSessionCard(s, "approved"))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+        </div>
+
+        {approvedSessions.length === 0 ? (
+          <div className="flex items-center gap-3 py-6 px-4 rounded-lg border bg-card text-center justify-center">
+            <CheckCircle className="h-5 w-5 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">No approved sessions in this period</p>
+          </div>
+        ) : (
+          <div className="rounded-lg border overflow-hidden divide-y">
+            {approvedSessions.map(s => {
+              const stats = sessionStats[s.id];
+              const qtyLabel = stats?.qty ? `${stats.qty % 1 === 0 ? stats.qty : stats.qty.toFixed(1)} cases` : null;
+              return (
+                <div key={s.id} className="flex items-center gap-3 px-4 py-3 bg-card hover:bg-muted/20 transition-colors">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium truncate">{s.name}</p>
+                      <Badge className="bg-success/10 text-success border-0 text-[10px] shrink-0">Approved</Badge>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      {s.inventory_lists?.name} · {s.approved_at ? new Date(s.approved_at).toLocaleDateString() : new Date(s.updated_at).toLocaleDateString()}
+                      {qtyLabel ? ` · ${qtyLabel}` : ""}
+                    </p>
+                  </div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0"><MoreHorizontal className="h-3.5 w-3.5" /></Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => handleView(s)}>
+                        <Eye className="h-3.5 w-3.5 mr-2" /> View items
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => handleDuplicate(s)}>
+                        <Copy className="h-3.5 w-3.5 mr-2" /> Duplicate
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => openSmartOrderModal(s)}>
+                        <ShoppingCart className="h-3.5 w-3.5 mr-2" /> Create Smart Order
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {/* Start Inventory Dialog */}
       <Dialog open={startOpen} onOpenChange={setStartOpen}>
@@ -1378,7 +1437,7 @@ export default function EnterInventoryPage() {
         </DialogContent>
       </Dialog>
 
-      {/* View Session Dialog — enhanced with risk colors for approved sessions */}
+      {/* View Session Dialog */}
       <Dialog open={!!viewItems} onOpenChange={() => { setViewItems(null); setViewSession(null); }}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
@@ -1390,7 +1449,6 @@ export default function EnterInventoryPage() {
             </DialogTitle>
           </DialogHeader>
 
-          {/* Risk summary cards for approved sessions */}
           {viewRiskSummary && (
             <div className="grid grid-cols-4 gap-2 mb-2">
               <div className="rounded-lg bg-destructive/10 p-3 text-center">
@@ -1446,7 +1504,7 @@ export default function EnterInventoryPage() {
                             type="number"
                             inputMode="decimal"
                             min={0}
-                            step={0.01}
+                            step={0.1}
                             className="w-20 h-7 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                             defaultValue={item.current_stock}
                             onFocus={(e) => e.target.select()}
