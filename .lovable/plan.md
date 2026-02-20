@@ -1,76 +1,74 @@
 
-# Inventory Management Enhancement Plan
+# Inventory Management — Input UX + Review/Approval Enhancements
 
-## What Already Exists (No Changes Needed)
+## Summary of All Changes Requested
 
-The codebase already has these features from previous sessions:
-- 3-section dashboard (In Progress / Review / Approved) in `EnterInventory.tsx`
-- Category mode dropdown (List Order / Custom Categories / My Categories)
-- `useCategoryMapping` hook reading saved category sets from `list_category_sets`, `list_categories`, `list_item_category_map`
-- Decimal input fields with `step=0.01`, min=0, max=100
-- Arrow key + Enter keyboard navigation
-- PAR read-only display from `par_guides` + `par_guide_items`
-- Risk colors (Red/Yellow/Green) in the View dialog for approved sessions
-- Suggested order column in the View dialog
+1. **Count entry input**: User can delete the `0` and start typing from a blank field (e.g. `0.1`, `0.5`, `10`)
+2. **Session cards**: Show "total cases" (sum of counts) on **Review** and **Approved** cards too — currently only In Progress shows it, but the stat is "items count" not "sum"
+3. **Review list**: Make counts editable in the Review dialog; show PAR, Pack Size, Risk, Suggested Order
+4. **Approval list (View dialog for approved sessions)**: Show Pack Size column
+5. **Smart Order**: Show Pack Size in the smart order view
 
-## What Needs to Be Fixed or Added
+---
 
-After thorough code review, here are the specific gaps:
+## Gap Analysis Against Current Code
 
-### Gap 1 — Landing Page: Item Count + Total Value on Cards
+### 1. Count Input — zero value blocks user from typing decimal
 
-**Current state:** Session cards show only the session name, list name, and date.
+**Current (line 952 — mobile card, line 1006 — desktop table):**
+```
+value={item.current_stock || ""}   // mobile
+value={item.current_stock}          // desktop
+```
 
-**Fix:** When loading sessions, also fetch the count of `inventory_session_items` per session and sum `current_stock * unit_cost` for a total value. Display these two numbers on each card.
+The desktop table uses `value={item.current_stock}` — when stock is `0` the field shows `0`, user must triple-click to select it before typing. The spec says user should be able to delete `0` and type `0.1`.
 
-Implementation: Modify `fetchSessions()` to join/aggregate item counts. Use a `select("*, inventory_session_items(count)")` or a secondary `.from("inventory_session_items").select("session_id, current_stock, unit_cost")` query keyed by `session_id`, then enrich the sessions array before rendering.
+**Fix:** Change both inputs to treat the value as a controlled string internally. Use `onFocus` to select all text so user can immediately overtype. Also change `onChange` to allow empty string intermediate state:
+- `value={item.current_stock == null ? "" : String(item.current_stock)}`
+- `onFocus={(e) => e.target.select()}` — this selects all on focus so any key immediately replaces the `0`
+- `onChange` parses to float, allows empty string as null/0 locally
+- `onBlur` saves the final value
 
-### Gap 2 — Clear Entries: Sets to NULL Not 0
+This is the cleanest UX: user clicks or tabs into field → `0` is selected → starts typing `0.1` → `0` gets replaced.
 
-**Current state:** `handleClearEntries` updates `current_stock = 0`. The user spec requires `current_stock = NULL` so blank means "not yet counted."
+### 2. Session card stat: "total cases" = sum of current_stock
 
-**Fix:** Change the update payload to `{ current_stock: null }`. Also update local state to set `current_stock: null` (not 0). The Input component should handle null gracefully (empty string display).
+**Current (line 179):**
+```
+statsMap[row.session_id].qty++;   // counts rows, not sum of stock
+```
+And label (line 1072):
+```
+const qtyLabel = stats ? `${stats.qty} items` : null;
+```
 
-### Gap 3 — Category Mode: Sync the active_category_mode from the list
+**Fix:**
+- Change aggregation to sum `current_stock`: `statsMap[row.session_id].qty += Number(row.current_stock ?? 0)`
+- Change label to: `${stats.qty % 1 === 0 ? stats.qty : stats.qty.toFixed(1)} cases`
+- This applies to **all 3 sections** automatically (the same `renderSessionCard` renders all)
 
-**Current state:** The dropdown in the count entry view defaults to `"list_order"` on every session open, ignoring `inventory_lists.active_category_mode`.
+### 3. Review dialog: make counts editable + show PAR + Pack Size + Risk + Suggested Order
 
-**Fix:** When `openEditor(session)` is called, fetch the list's `active_category_mode` and set `categoryMode` accordingly:
-- DB value `"list_order"` → component state `"list_order"`
-- DB value `"ai"` or `"custom-categories"` → component state `"custom-categories"`
-- DB value `"user"` or `"my-categories"` → component state `"my-categories"`
+**Current `Review.tsx` view dialog (lines 269-308):** read-only table with columns: Item, Category, Stock, PAR, Risk, Suggested Order. No Pack Size. Stock is not editable.
 
-Also: the `useCategoryMapping` hook maps `"my-categories"` → `set_type = "user_manual"` and `"custom-categories"` → `set_type = "custom_ai"`. That mapping is correct. No hook changes needed.
+**Fix in `Review.tsx`:**
+- Add **Pack Size** column header and cell
+- Make **Stock** column an editable `<Input>` that saves `current_stock` to `inventory_session_items` on blur
+- Add inline state `editedItems` that mirrors `viewItems` so edits are tracked locally and persisted
+- PAR column already exists and is read-only ✓
 
-### Gap 4 — Session Creation: Store Active PAR into par_level
+**Fix in `EnterInventory.tsx` (Review card view dialog):** Same — the view dialog for IN_REVIEW sessions in `EnterInventory.tsx` currently shows read-only stock with no Pack Size. Apply same changes: add Pack Size column, make stock editable for IN_REVIEW sessions.
 
-**Current state:** `handleCreateSession` already populates `par_level` from the selected PAR guide if the user picks one in the "Start Inventory Session" dialog. However if no PAR guide is chosen, items get `par_level = 0`.
+### 4. Approved view dialog: add Pack Size column
 
-**Fix:** In `handleCreateSession`, if no explicit `selectedPar` is chosen, auto-detect the latest `par_guide` for that list and use its items' `par_level` values. This ensures `inventory_session_items.par_level` is always populated from the approved PAR before the session begins.
+**Current approved view dialog (EnterInventory.tsx lines 1406-1456):**
+Columns: Item, Category, Stock, PAR, Risk, Suggested Order — **no Pack Size**.
 
-### Gap 5 — Auto-create Smart Order Run on Approval
+**Fix:** Add `pack_size` column between Category and Stock.
 
-**Current state:** The manager must manually click "Create Smart Order" after approval. The user spec says to create `smart_order_runs` + `smart_order_run_items` automatically when a session is approved.
+### 5. Smart Order view
 
-**Fix:** Enhance `handleApprove(sessionId)` in `EnterInventory.tsx` (and in `Review.tsx`) to:
-1. Fetch all `inventory_session_items` for the session
-2. Fetch PAR data for the list (latest PAR guide)
-3. Compute risk + suggested order per item
-4. Insert a `smart_order_runs` record (linked to session)
-5. Insert `smart_order_run_items` for each item
-
-This makes Smart Order available immediately after approval, without a separate user action.
-
-### Gap 6 — Notifications on Approval
-
-**Current state:** Approval does nothing with `notifications` or `notification_preferences`.
-
-**Fix:** After the auto-smart-order is created on approval, read the `notification_preferences` for the restaurant. If any RED items exist, insert a notification record into `notifications` for each Owner/Manager (based on `recipients_mode`):
-- Query `restaurant_members` for `role IN ('OWNER', 'MANAGER')`
-- If `recipients_mode = "OWNERS_MANAGERS"` → notify all owners + managers
-- If `recipients_mode = "ALL"` → notify all members
-- If `recipients_mode = "CUSTOM"` → notify users in `alert_recipients`
-- Insert a `notifications` row per target user with `type = "LOW_STOCK"`, `severity = "WARN"` or `"ERROR"` based on red count, `title` and `message` with item counts
+The Smart Order page (`/app/smart-order`) is a separate file. Pack Size already exists in `smart_order_run_items.pack_size`. Need to check SmartOrder.tsx to confirm column is shown.
 
 ---
 
@@ -78,87 +76,97 @@ This makes Smart Order available immediately after approval, without a separate 
 
 ### `src/pages/app/inventory/EnterInventory.tsx`
 
-This is the primary file. Changes:
+**Change A — `fetchSessions` line 179:**
+Sum stock instead of counting rows:
+```
+statsMap[row.session_id].qty += Number(row.current_stock ?? 0);
+```
 
-1. **`fetchSessions`**: Fetch item counts and total values per session. Add a helper `fetchSessionStats()` that returns `Map<session_id, { qty: number; totalValue: number }>`.
+**Change B — `renderSessionCard` line 1072:**
+```
+const qtyLabel = stats && stats.qty > 0
+  ? `${stats.qty % 1 === 0 ? stats.qty : stats.qty.toFixed(1)} cases`
+  : null;
+```
 
-2. **`renderSessionCard`**: Display `qty` (item count) and `totalValue` on each card for all three section types.
+**Change C — Mobile card input (line 952):**
+```
+value={item.current_stock == null ? "" : item.current_stock === 0 ? "0" : String(item.current_stock)}
+onFocus={(e) => e.target.select()}
+onChange={(e) => {
+  const val = e.target.value;
+  handleUpdateStock(item.id, val === "" ? 0 : parseFloat(val) || 0);
+}}
+```
 
-3. **`handleClearEntries`**: Change `current_stock: 0` to `current_stock: null`.
+**Change D — Desktop table input (line 1006):**
+Same treatment as mobile:
+```
+value={item.current_stock == null ? "" : String(item.current_stock)}
+onFocus={(e) => e.target.select()}
+```
 
-4. **`openEditor`**: After loading session items, also fetch the list's `active_category_mode` and call `setCategoryMode()` with the mapped value.
+**Change E — Approved view dialog (around line 1410):**
+Add Pack Size column header after Category:
+```
+<TableHead className="text-xs font-semibold">Pack Size</TableHead>
+```
+And cell after Category cell:
+```
+<TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
+```
 
-5. **`handleApprove`**: After updating status to APPROVED, auto-create the smart order run + items, then fire notifications.
+**Change F — Review view dialog (in EnterInventory.tsx, for IN_REVIEW sessions):**
+The view dialog at lines 1406-1456 only shows full risk/PAR columns for APPROVED sessions. For IN_REVIEW, it just shows Item, Category, Stock. We need to:
+- Show PAR (read-only) for IN_REVIEW sessions too
+- Make stock editable for IN_REVIEW sessions
+- Add Pack Size for both
 
 ### `src/pages/app/inventory/Review.tsx`
 
-6. **`handleApprove`**: Apply the same auto-smart-order + notification logic as in `EnterInventory.tsx` so the Review page approval is also consistent.
+**Change G — Add `editedItems` state:**
+```
+const [editedItems, setEditedItems] = useState<Record<string, number>>({});
+```
+
+**Change H — `handleView` (already exists) — no change needed.**
+
+**Change I — View dialog table:**
+- Add Pack Size column
+- Make Stock an editable Input for IN_REVIEW sessions
+- Save on blur via `supabase.from("inventory_session_items").update({ current_stock: val }).eq("id", item.id)`
+- PAR column already exists ✓
+- Risk + Suggested Order already exist ✓
 
 ---
 
-## Technical Implementation Notes
+## SmartOrder.tsx — Quick Check Needed
 
-### Fetching Session Stats (qty + total value)
-
-```
-// After loading sessions array:
-const sessionIds = sessions.map(s => s.id);
-const { data: statsRaw } = await supabase
-  .from("inventory_session_items")
-  .select("session_id, current_stock, unit_cost")
-  .in("session_id", sessionIds);
-
-// Build map
-const statsMap = {}; 
-statsRaw?.forEach(row => {
-  if (!statsMap[row.session_id]) statsMap[row.session_id] = { qty: 0, totalValue: 0 };
-  statsMap[row.session_id].qty++;
-  if (row.current_stock != null && row.unit_cost != null) {
-    statsMap[row.session_id].totalValue += row.current_stock * row.unit_cost;
-  }
-});
-```
-
-### Auto Smart Order on Approval
-
-```
-// In handleApprove(sessionId):
-// 1. Fetch session to get inventory_list_id
-// 2. Fetch session items
-// 3. Fetch latest par_guide for the list → par_guide_items
-// 4. Compute risk per item
-// 5. Insert smart_order_runs → get run.id
-// 6. Insert smart_order_run_items
-// 7. If run succeeded → fire notifications
-```
-
-### Notification Insert Logic
-
-```
-// Get notification_preferences for restaurant (channel_in_app: true cases)
-// Get restaurant_members
-// For each eligible user, insert into notifications:
-{
-  restaurant_id,
-  user_id,
-  type: "LOW_STOCK",
-  severity: redCount > 0 ? "ERROR" : "WARN",
-  title: "Inventory Approved - X items need attention",
-  message: `${redCount} high risk, ${yellowCount} medium risk items`,
-  data: { session_id, run_id, red: redCount, yellow: yellowCount }
-}
-```
+Let me also check SmartOrder.tsx to confirm Pack Size visibility.
 
 ---
 
-## Summary of Changes
+## Detailed Technical Approach for Editable Stock in Review
 
-| Area | File | Change Type |
+The Review dialog already loads `viewItems` from the DB. To make stock editable:
+
+1. Add a `localItems` state that starts as a copy of `viewItems` when the dialog opens
+2. On input change, update `localItems` in memory
+3. On `onBlur`, call `supabase.from("inventory_session_items").update({ current_stock: newVal }).eq("id", item.id)`
+4. Recompute risk and suggested order dynamically from `localItems`
+
+This keeps the dialog "live" — manager can adjust a count, see risk color update immediately, then approve.
+
+---
+
+## Summary Table
+
+| Change | File | Lines Affected |
 |---|---|---|
-| Landing cards: qty + value | EnterInventory.tsx | Enhance fetchSessions + renderSessionCard |
-| Clear sets NULL not 0 | EnterInventory.tsx | Fix handleClearEntries |
-| Category mode syncs from list | EnterInventory.tsx | Fix openEditor |
-| Auto smart order on approve | EnterInventory.tsx + Review.tsx | New logic in handleApprove |
-| Notifications on approve | EnterInventory.tsx + Review.tsx | New logic after approval |
+| Sum stock instead of row count for "cases" stat | EnterInventory.tsx | 179, 1072 |
+| Input select-all on focus (mobile + desktop) | EnterInventory.tsx | 952, 1006 |
+| Add Pack Size to approved view dialog | EnterInventory.tsx | ~1409 |
+| Make stock editable + add Pack Size in review view | EnterInventory.tsx | ~1406-1456 |
+| Make stock editable + add Pack Size in Review.tsx dialog | Review.tsx | 269-308 |
 
-No database migrations required. No new tables. No changes to `useCategoryMapping.ts`. No changes to `Review.tsx` schema — only its `handleApprove` logic.
+No database changes. No new tables. No schema migrations.
