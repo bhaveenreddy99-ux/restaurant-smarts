@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import {
-  BarChart3, AlertTriangle, Package, TrendingUp, DollarSign,
+  BarChart3, AlertTriangle, Package, TrendingUp, TrendingDown, DollarSign,
   Building2, ArrowRight, Trophy, ThumbsDown, CheckCircle2
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -27,15 +27,71 @@ function computeRisk(stock: number, par: number): "RED" | "YELLOW" | "GREEN" {
 
 function fmt(v: number) { return v.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }); }
 
+// ─── PAR suggestion metric (lightweight, on-demand) ──────────────────────────
+async function computePARSuggestionCount(restaurantId: string, lookbackDays = 30) {
+  const since = new Date();
+  since.setDate(since.getDate() - lookbackDays);
+
+  // Get PAR guide items
+  const { data: parItems } = await supabase
+    .from("par_guide_items")
+    .select("item_name, par_level, par_guides!inner(restaurant_id)")
+    .eq("par_guides.restaurant_id", restaurantId);
+
+  if (!parItems || parItems.length === 0) return { total: 0, major: 0, top5: [] as string[] };
+
+  const parMap: Record<string, number> = {};
+  for (const p of parItems) {
+    const key = p.item_name.trim().toLowerCase();
+    if (!parMap[key] || p.par_level > parMap[key]) parMap[key] = Number(p.par_level);
+  }
+
+  // Usage events
+  const { data: usageEvents } = await supabase
+    .from("usage_events")
+    .select("item_name, quantity_used")
+    .eq("restaurant_id", restaurantId)
+    .gte("created_at", since.toISOString());
+
+  const usageMap: Record<string, number> = {};
+  for (const e of usageEvents || []) {
+    const k = e.item_name.trim().toLowerCase();
+    usageMap[k] = (usageMap[k] || 0) + Number(e.quantity_used);
+  }
+
+  let total = 0, major = 0;
+  const top5: { name: string; pct: number }[] = [];
+
+  for (const [key, currentPar] of Object.entries(parMap)) {
+    const totalUsage = usageMap[key];
+    if (!totalUsage || totalUsage <= 0) continue;
+    const avgDaily = totalUsage / lookbackDays;
+    const suggested = Math.round(avgDaily * 9 * 10) / 10; // 7d coverage + 2d lead
+    const changeAmt = suggested - currentPar;
+    const changePct = currentPar > 0 ? (changeAmt / currentPar) * 100 : 100;
+    if (Math.abs(changeAmt) < 0.5 && Math.abs(changePct) < 10) continue;
+    total++;
+    if (Math.abs(changePct) >= 20) major++;
+    top5.push({ name: parItems.find(p => p.item_name.trim().toLowerCase() === key)?.item_name || key, pct: changePct });
+  }
+
+  top5.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
+  return { total, major, top5: top5.slice(0, 5).map(x => x.name) };
+}
+
 // ─── Single Restaurant Report ─────────────────────────────────────────────────
 function SingleReport({ restaurantId }: { restaurantId: string }) {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [kpis, setKpis] = useState({ value: 0, red: 0, yellow: 0, green: 0, sessions: 0 });
   const [trend, setTrend] = useState<{ week: string; value: number }[]>([]);
   const [topItems, setTopItems] = useState<{ item_name: string; total_value: number; current_stock: number; unit: string }[]>([]);
+  const [parMetrics, setParMetrics] = useState<{ total: number; major: number; top5: string[] } | null>(null);
 
   const fetch = useCallback(async () => {
     setLoading(true);
+    // Compute PAR suggestion metrics in parallel
+    computePARSuggestionCount(restaurantId).then(m => setParMetrics(m));
 
     // Latest approved session
     const { data: sessions } = await supabase
@@ -156,6 +212,36 @@ function SingleReport({ restaurantId }: { restaurantId: string }) {
           </CardContent>
         </Card>
       </div>
+
+      {/* PAR Suggestions Summary */}
+      {parMetrics && parMetrics.total > 0 && (
+        <Card className="border-primary/20 bg-primary/3">
+          <CardContent className="flex items-center justify-between p-4 gap-4 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="h-9 w-9 rounded-xl bg-primary/10 flex items-center justify-center">
+                <TrendingUp className="h-4.5 w-4.5 text-primary" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold">
+                  {parMetrics.total} PAR change{parMetrics.total !== 1 ? "s" : ""} suggested (last 30 days)
+                  {parMetrics.major > 0 && (
+                    <span className="ml-2 text-[11px] font-normal text-destructive font-medium">• {parMetrics.major} major (≥20%)</span>
+                  )}
+                </p>
+                {parMetrics.top5.length > 0 && (
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    Top items: {parMetrics.top5.join(", ")}
+                  </p>
+                )}
+              </div>
+            </div>
+            <Button size="sm" variant="outline" className="gap-1.5 shrink-0 text-xs h-8"
+              onClick={() => navigate("/app/par/suggestions")}>
+              Review Suggestions <ArrowRight className="h-3 w-3" />
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-5 lg:grid-cols-2">
         {/* Trend chart */}

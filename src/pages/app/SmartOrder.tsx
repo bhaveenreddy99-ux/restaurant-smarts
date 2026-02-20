@@ -86,16 +86,33 @@ export default function SmartOrderPage() {
 
   const handleDeleteRun = async () => {
     if (!deleteRunId) return;
-    await supabase.from("smart_order_run_items").delete().eq("run_id", deleteRunId);
-    // Also delete linked purchase history
-    const { data: purchases } = await supabase.from("purchase_history").select("id").eq("smart_order_run_id", deleteRunId);
+    const idToDelete = deleteRunId;
+
+    // Optimistic update — remove from UI immediately
+    setRuns(prev => prev.filter(r => r.id !== idToDelete));
+    setDeleteRunId(null);
+    if (selectedRun?.id === idToDelete) { setSelectedRun(null); setRunItems([]); }
+
+    // Delete child items first (FK safety)
+    await supabase.from("smart_order_run_items").delete().eq("run_id", idToDelete);
+
+    // Delete linked purchase history
+    const { data: purchases } = await supabase.from("purchase_history").select("id").eq("smart_order_run_id", idToDelete);
     if (purchases && purchases.length > 0) {
       await supabase.from("purchase_history_items").delete().in("purchase_history_id", purchases.map(p => p.id));
       await supabase.from("purchase_history").delete().in("id", purchases.map(p => p.id));
     }
-    const { error } = await supabase.from("smart_order_runs").delete().eq("id", deleteRunId);
-    if (error) toast.error(error.message);
-    else { toast.success("Smart order deleted"); setDeleteRunId(null); if (selectedRun?.id === deleteRunId) setSelectedRun(null); fetchRuns(); }
+
+    const { error } = await supabase.from("smart_order_runs").delete().eq("id", idToDelete);
+    if (error) {
+      toast.error(`Delete failed: ${error.message}`);
+      // Roll back optimistic update
+      fetchRuns();
+    } else {
+      toast.success("Smart order deleted");
+      // Confirm the deletion from DB
+      fetchRuns();
+    }
   };
 
   const riskBadge = (risk: string) => {

@@ -19,6 +19,7 @@ import EnterInventoryPage from "@/pages/app/inventory/EnterInventory";
 import ImportPage from "@/pages/app/inventory/Import";
 import SmartOrderPage from "@/pages/app/SmartOrder";
 import PARManagementPage from "@/pages/app/PARManagement";
+import PARSuggestionsPage from "@/pages/app/PARSuggestions";
 
 import OrdersPage from "@/pages/app/Orders";
 import ReportsPage from "@/pages/app/Reports";
@@ -61,6 +62,7 @@ const App = () => (
                 <Route path="inventory/import/:listId" element={<ImportPage />} />
                 <Route path="smart-order" element={<SmartOrderPage />} />
                 <Route path="par" element={<PARManagementPage />} />
+                <Route path="par/suggestions" element={<PARSuggestionsPage />} />
                 
                 <Route path="orders" element={<OrdersPage />} />
                 <Route path="reports" element={<ReportsPage />} />
