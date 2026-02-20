@@ -5,6 +5,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
 import { CheckCircle, XCircle, Eye, ClipboardCheck } from "lucide-react";
@@ -26,6 +27,7 @@ export default function ReviewPage() {
   const [sessions, setSessions] = useState<any[]>([]);
   const [viewItems, setViewItems] = useState<any[] | null>(null);
   const [viewSession, setViewSession] = useState<any>(null);
+  const [localItems, setLocalItems] = useState<Record<string, number>>({});
 
   const fetchSessions = async () => {
     if (!currentRestaurant) return;
@@ -178,7 +180,17 @@ export default function ReviewPage() {
     }
     
     setViewItems((data || []).map(item => ({ ...item, approved_par: null })));
+    setLocalItems({});
     setViewSession(session);
+  };
+
+  const getLocalStock = (item: any) =>
+    localItems[item.id] !== undefined ? localItems[item.id] : Number(item.current_stock);
+
+  const handleStockBlur = async (itemId: string, val: number) => {
+    await supabase.from("inventory_session_items")
+      .update({ current_stock: val })
+      .eq("id", itemId);
   };
 
   const isManagerOrOwner = currentRestaurant?.role === "OWNER" || currentRestaurant?.role === "MANAGER";
@@ -240,7 +252,7 @@ export default function ReviewPage() {
         </div>
       )}
 
-      <Dialog open={!!viewItems} onOpenChange={() => { setViewItems(null); setViewSession(null); }}>
+      <Dialog open={!!viewItems} onOpenChange={() => { setViewItems(null); setViewSession(null); setLocalItems({}); }}>
         <DialogContent className="max-w-3xl">
           <DialogHeader><DialogTitle>{viewSession?.name} — Items</DialogTitle></DialogHeader>
           
@@ -272,6 +284,7 @@ export default function ReviewPage() {
                 <TableRow className="bg-muted/30">
                   <TableHead className="text-xs font-semibold">Item</TableHead>
                   <TableHead className="text-xs font-semibold">Category</TableHead>
+                  <TableHead className="text-xs font-semibold">Pack Size</TableHead>
                   <TableHead className="text-xs font-semibold">Stock</TableHead>
                   <TableHead className="text-xs font-semibold">PAR</TableHead>
                   <TableHead className="text-xs font-semibold">Risk</TableHead>
@@ -280,17 +293,37 @@ export default function ReviewPage() {
               </TableHeader>
               <TableBody>
                 {viewItems?.map(item => {
-                  const risk = getRisk(Number(item.current_stock), item.approved_par);
+                  const stock = getLocalStock(item);
+                  const risk = getRisk(stock, item.approved_par);
                   const suggestedOrder = item.approved_par != null && item.approved_par > 0
-                    ? Math.max(0, item.approved_par - Number(item.current_stock))
+                    ? Math.max(0, item.approved_par - stock)
                     : null;
                   return (
                     <TableRow key={item.id} className={risk.bgClass}>
                       <TableCell className="text-sm font-medium">{item.item_name}</TableCell>
                       <TableCell><Badge variant="secondary" className="text-[10px] font-normal">{item.category}</Badge></TableCell>
-                      <TableCell className="font-mono text-sm">{item.current_stock}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
+                      <TableCell>
+                        <Input
+                          type="number"
+                          inputMode="decimal"
+                          min={0}
+                          step={0.01}
+                          className="w-20 h-7 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                          value={localItems[item.id] !== undefined ? localItems[item.id] : item.current_stock}
+                          onFocus={(e) => e.target.select()}
+                          onChange={(e) => {
+                            const v = parseFloat(e.target.value) || 0;
+                            setLocalItems(prev => ({ ...prev, [item.id]: v }));
+                          }}
+                          onBlur={(e) => {
+                            const v = parseFloat(e.target.value) || 0;
+                            handleStockBlur(item.id, v);
+                          }}
+                        />
+                      </TableCell>
                       <TableCell className="font-mono text-sm text-muted-foreground">
-                        {item.approved_par !== null ? item.approved_par : "—"}
+                        {item.approved_par !== null && item.approved_par !== undefined ? item.approved_par : "—"}
                       </TableCell>
                       <TableCell>
                         <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px]`}>

@@ -176,7 +176,7 @@ export default function EnterInventoryPage() {
       const statsMap: Record<string, { qty: number; totalValue: number }> = {};
       (statsRaw || []).forEach((row) => {
         if (!statsMap[row.session_id]) statsMap[row.session_id] = { qty: 0, totalValue: 0 };
-        statsMap[row.session_id].qty++;
+        statsMap[row.session_id].qty += Number(row.current_stock ?? 0);
         if (row.current_stock != null && row.unit_cost != null) {
           statsMap[row.session_id].totalValue += Number(row.current_stock) * Number(row.unit_cost);
         }
@@ -949,8 +949,12 @@ export default function EnterInventoryPage() {
                                 min={0}
                                 max={100}
                                 step={0.01}
-                                value={item.current_stock || ""}
-                                onChange={(e) => handleUpdateStock(item.id, parseFloat(e.target.value) || 0)}
+                                value={item.current_stock == null ? "" : String(item.current_stock)}
+                                onFocus={(e) => e.target.select()}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  handleUpdateStock(item.id, val === "" ? 0 : parseFloat(val) || 0);
+                                }}
                                 onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
                                 onKeyDown={(e) => handleKeyDown(e, globalIdx, "stock")}
                                 className="h-12 text-lg font-mono text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
@@ -1003,8 +1007,12 @@ export default function EnterInventoryPage() {
                           min={0}
                           max={100}
                           step={0.01}
-                          value={item.current_stock}
-                          onChange={(e) => handleUpdateStock(item.id, parseFloat(e.target.value) || 0)}
+                          value={item.current_stock == null ? "" : String(item.current_stock)}
+                          onFocus={(e) => e.target.select()}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            handleUpdateStock(item.id, val === "" ? 0 : parseFloat(val) || 0);
+                          }}
                           onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
                           onKeyDown={(e) => handleKeyDown(e, idx, "stock")}
                           className="w-20 h-8 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
@@ -1069,7 +1077,9 @@ export default function EnterInventoryPage() {
   // ─── MAIN DASHBOARD: 3 STACKED CARDS ──────────
   const renderSessionCard = (s: any, type: "inprogress" | "review" | "approved") => {
     const stats = sessionStats[s.id];
-    const qtyLabel = stats ? `${stats.qty} items` : null;
+    const qtyLabel = stats && stats.qty > 0
+      ? `${stats.qty % 1 === 0 ? stats.qty : stats.qty.toFixed(1)} cases`
+      : null;
     const valueLabel = stats && stats.totalValue > 0 ? `$${stats.totalValue.toFixed(2)}` : null;
 
     if (isCompact) {
@@ -1408,46 +1418,61 @@ export default function EnterInventoryPage() {
                 <TableRow className="bg-muted/30">
                   <TableHead className="text-xs font-semibold">Item</TableHead>
                   <TableHead className="text-xs font-semibold">Category</TableHead>
+                  <TableHead className="text-xs font-semibold">Pack Size</TableHead>
                   <TableHead className="text-xs font-semibold">Stock</TableHead>
-                  {viewSession?.status === "APPROVED" && (
-                    <>
-                      <TableHead className="text-xs font-semibold">PAR</TableHead>
-                      <TableHead className="text-xs font-semibold">Risk</TableHead>
-                      <TableHead className="text-xs font-semibold">Suggested Order</TableHead>
-                    </>
-                  )}
+                  <TableHead className="text-xs font-semibold">PAR</TableHead>
+                  <TableHead className="text-xs font-semibold">Risk</TableHead>
+                  <TableHead className="text-xs font-semibold">Suggested Order</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {viewItems?.map((item) => {
                   const isApproved = viewSession?.status === "APPROVED";
-                  const risk = isApproved ? getRisk(Number(item.current_stock), item.approved_par) : null;
-                  const suggestedOrder = isApproved && item.approved_par != null && item.approved_par > 0
+                  const risk = getRisk(Number(item.current_stock), item.approved_par);
+                  const suggestedOrder = item.approved_par != null && item.approved_par > 0
                     ? Math.max(0, item.approved_par - Number(item.current_stock))
                     : null;
 
                   return (
-                    <TableRow key={item.id} className={isApproved && risk ? `${risk.bgClass}` : ""}>
+                    <TableRow key={item.id} className={risk.bgClass}>
                       <TableCell className="text-sm font-medium">{item.item_name}</TableCell>
                       <TableCell><Badge variant="secondary" className="text-[10px] font-normal">{item.category}</Badge></TableCell>
-                      <TableCell className="font-mono text-sm">{item.current_stock}</TableCell>
-                      {isApproved && (
-                        <>
-                          <TableCell className="font-mono text-sm text-muted-foreground">
-                            {item.approved_par !== null ? item.approved_par : "—"}
-                          </TableCell>
-                          <TableCell>
-                            {risk && (
-                              <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px]`}>
-                                {risk.label}
-                              </Badge>
-                            )}
-                          </TableCell>
-                          <TableCell className="font-mono text-sm">
-                            {suggestedOrder !== null ? suggestedOrder.toFixed(1) : "—"}
-                          </TableCell>
-                        </>
-                      )}
+                      <TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
+                      <TableCell className="font-mono text-sm">
+                        {isApproved ? (
+                          <span>{item.current_stock}</span>
+                        ) : (
+                          <Input
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            step={0.01}
+                            className="w-20 h-7 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                            defaultValue={item.current_stock}
+                            onFocus={(e) => e.target.select()}
+                            onBlur={async (e) => {
+                              const newVal = parseFloat(e.target.value) || 0;
+                              await supabase.from("inventory_session_items")
+                                .update({ current_stock: newVal })
+                                .eq("id", item.id);
+                              setViewItems(prev => prev ? prev.map(vi =>
+                                vi.id === item.id ? { ...vi, current_stock: newVal } : vi
+                              ) : prev);
+                            }}
+                          />
+                        )}
+                      </TableCell>
+                      <TableCell className="font-mono text-sm text-muted-foreground">
+                        {item.approved_par !== null && item.approved_par !== undefined ? item.approved_par : "—"}
+                      </TableCell>
+                      <TableCell>
+                        <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px]`}>
+                          {risk.label}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="font-mono text-sm">
+                        {suggestedOrder !== null ? suggestedOrder.toFixed(1) : "—"}
+                      </TableCell>
                     </TableRow>
                   );
                 })}
