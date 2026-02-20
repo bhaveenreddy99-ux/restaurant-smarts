@@ -28,6 +28,8 @@ import SettingsPage from "@/pages/app/Settings";
 import NotificationsPage from "@/pages/app/Notifications";
 import AlertSettingsPage from "@/pages/app/settings/AlertSettings";
 import ReminderSettingsPage from "@/pages/app/settings/ReminderSettings";
+import ForgotPasswordPage from "@/pages/ForgotPassword";
+import ResetPasswordPage from "@/pages/ResetPassword";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -44,6 +46,8 @@ const App = () => (
               <Route path="/" element={<LandingPage />} />
               <Route path="/login" element={<LoginPage />} />
               <Route path="/signup" element={<SignupPage />} />
+              <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+              <Route path="/reset-password" element={<ResetPasswordPage />} />
               <Route path="/demo" element={<DemoPage />} />
               <Route path="/onboarding/create-restaurant" element={<CreateRestaurantPage />} />
               <Route path="/app" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
