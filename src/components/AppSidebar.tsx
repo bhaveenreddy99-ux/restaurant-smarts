@@ -123,7 +123,12 @@ export function AppSidebar() {
         {renderGroup("Operations", operationsNav)}
         {renderGroup("Insights", insightsNav)}
         {renderGroup("Alerts", notificationsNav)}
-        {isManagerPlus && renderGroup("Admin", isOwner ? adminNav : adminNav.filter(n => n.url === "/app/settings"))}
+        {isManagerPlus && renderGroup("Admin", adminNav.filter(n => {
+          // Staff management is owner-only
+          if (n.url === "/app/staff") return isOwner;
+          // All other admin items (Settings, Alert Settings, Reminders) are available to all managers
+          return true;
+        }))}
       </SidebarContent>
 
       <SidebarFooter className="p-3">

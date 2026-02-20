@@ -23,18 +23,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // onAuthStateChange fires immediately with INITIAL_SESSION carrying the current session.
+    // No need for a separate getSession call — that would cause a double state update and loading flicker.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         setSession(session);
         setLoading(false);
       }
     );
-
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setLoading(false);
-    });
-
     return () => subscription.unsubscribe();
   }, []);
 
