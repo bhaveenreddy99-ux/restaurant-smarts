@@ -14,7 +14,8 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Building2, MapPin, Bell, ChevronsUpDown, Check, Search, BarChart3 } from "lucide-react";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { supabase } from "@/integrations/supabase/client";
 
 const routeNames: Record<string, string> = {
   "/app/dashboard": "Dashboard",
@@ -40,6 +41,13 @@ export function AppHeader() {
   const location = useLocation();
   const navigate = useNavigate();
   const [restaurantSearch, setRestaurantSearch] = useState("");
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!currentRestaurant?.id) { setLogoUrl(null); return; }
+    supabase.from("restaurant_settings").select("logo_url").eq("restaurant_id", currentRestaurant.id).maybeSingle()
+      .then(({ data }) => setLogoUrl((data as any)?.logo_url || null));
+  }, [currentRestaurant?.id]);
 
   const pageName = routeNames[location.pathname] ||
     (location.pathname.startsWith("/app/inventory/import") ? "Import" :
@@ -192,11 +200,12 @@ export function AppHeader() {
         )}
       </Button>
 
-      {/* Profile avatar */}
-      <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center">
-        <span className="text-[10px] font-bold text-primary">
-          {currentRestaurant?.name?.charAt(0)?.toUpperCase() || "R"}
-        </span>
+      {/* Profile avatar — shows restaurant logo if set */}
+      <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center overflow-hidden">
+        {logoUrl
+          ? <img src={logoUrl} alt="Logo" className="h-full w-full object-contain" />
+          : <span className="text-[10px] font-bold text-primary">{currentRestaurant?.name?.charAt(0)?.toUpperCase() || "R"}</span>
+        }
       </div>
     </header>
   );
