@@ -1391,48 +1391,67 @@ export type Database = {
       }
       reminders: {
         Row: {
+          auto_create_session: boolean
           created_at: string
           created_by: string | null
           days_of_week: Json
           id: string
+          inventory_list_id: string | null
           is_enabled: boolean
           location_id: string | null
+          lock_after_hours: number | null
           name: string
           recipients_mode: Database["public"]["Enums"]["recipients_mode"]
+          reminder_lead_minutes: number
           restaurant_id: string
           time_of_day: string
           timezone: string
           updated_at: string
         }
         Insert: {
+          auto_create_session?: boolean
           created_at?: string
           created_by?: string | null
           days_of_week?: Json
           id?: string
+          inventory_list_id?: string | null
           is_enabled?: boolean
           location_id?: string | null
+          lock_after_hours?: number | null
           name: string
           recipients_mode?: Database["public"]["Enums"]["recipients_mode"]
+          reminder_lead_minutes?: number
           restaurant_id: string
           time_of_day?: string
           timezone?: string
           updated_at?: string
         }
         Update: {
+          auto_create_session?: boolean
           created_at?: string
           created_by?: string | null
           days_of_week?: Json
           id?: string
+          inventory_list_id?: string | null
           is_enabled?: boolean
           location_id?: string | null
+          lock_after_hours?: number | null
           name?: string
           recipients_mode?: Database["public"]["Enums"]["recipients_mode"]
+          reminder_lead_minutes?: number
           restaurant_id?: string
           time_of_day?: string
           timezone?: string
           updated_at?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "reminders_inventory_list_id_fkey"
+            columns: ["inventory_list_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_lists"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "reminders_location_id_fkey"
             columns: ["location_id"]

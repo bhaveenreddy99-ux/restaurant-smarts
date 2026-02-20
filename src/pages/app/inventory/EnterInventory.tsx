@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useRestaurant } from "@/contexts/RestaurantContext";
@@ -25,7 +25,7 @@ import {
   Plus, Send, Package, BookOpen, Play, ArrowLeft, Eye, CheckCircle,
   XCircle, ShoppingCart, Copy, Clock, ClipboardCheck, Trash2, ChevronRight, Eraser,
   Search, SkipForward, EyeOff, Check, ListOrdered, AlertTriangle, MoreHorizontal,
-  LayoutGrid, List as ListIcon, TrendingDown } from "lucide-react";
+  LayoutGrid, List as ListIcon, TrendingDown, CalendarClock } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useCategoryMapping } from "@/hooks/useCategoryMapping";
@@ -61,6 +61,55 @@ const ProgressBar = ({ counted, total }: { counted: number; total: number }) => 
     </div>
   );
 };
+
+// ── Schedule helpers ──────────────────────────────────
+function computeNextOccurrence(schedule: any): Date | null {
+  const dayMap: Record<string, number> = { SUN: 0, MON: 1, TUE: 2, WED: 3, THU: 4, FRI: 5, SAT: 6 };
+  const tzOffsets: Record<string, number> = {
+    "America/New_York": -5, "America/Chicago": -6,
+    "America/Denver": -7, "America/Los_Angeles": -8,
+  };
+  const days: string[] = schedule.days_of_week || [];
+  const [h, m] = (schedule.time_of_day || "09:00").split(":").map(Number);
+  const offset = tzOffsets[schedule.timezone] ?? -5;
+  const now = new Date();
+
+  const monthlyDay = days.find(d => d.startsWith("MONTHLY_"));
+  if (monthlyDay) {
+    const day = parseInt(monthlyDay.split("_")[1]);
+    const candidate = new Date(now.getFullYear(), now.getMonth(), day, h, m, 0, 0);
+    if (candidate <= now) candidate.setMonth(candidate.getMonth() + 1);
+    return candidate;
+  }
+
+  for (let i = 0; i <= 7; i++) {
+    const candidate = new Date(now);
+    candidate.setDate(now.getDate() + i);
+    const candidateDay = Object.keys(dayMap).find(k => dayMap[k] === candidate.getDay());
+    if (candidateDay && days.includes(candidateDay)) {
+      candidate.setHours(h, m, 0, 0);
+      if (candidate > now) return candidate;
+    }
+  }
+  return null;
+}
+
+function getScheduleStatus(nextDate: Date): "upcoming" | "ready" | "overdue" {
+  const diffMs = nextDate.getTime() - Date.now();
+  if (diffMs < 0) return "overdue";
+  if (diffMs < 60 * 60 * 1000) return "ready";
+  return "upcoming";
+}
+
+function formatCountdown(nextDate: Date): string {
+  const diffMs = nextDate.getTime() - Date.now();
+  if (diffMs <= 0) return "Now";
+  const h = Math.floor(diffMs / 3600000);
+  const m = Math.floor((diffMs % 3600000) / 60000);
+  if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
 
 export default function EnterInventoryPage() {
   const { currentRestaurant } = useRestaurant();
@@ -114,6 +163,10 @@ export default function EnterInventoryPage() {
   const [viewToggle, setViewToggle] = useState<"table" | "compact">("table");
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
+  // Inventory schedules
+  const [schedules, setSchedules] = useState<any[]>([]);
+  const [, setCounterTick] = useState(0);
+
   // Approved PAR data for read-only display during count entry
   const [approvedParMap, setApprovedParMap] = useState<Record<string, number>>({});
 
@@ -144,6 +197,17 @@ export default function EnterInventoryPage() {
     loadApprovedPar();
   }, [activeSession, currentRestaurant]);
 
+  const fetchSchedules = useCallback(async () => {
+    if (!currentRestaurant) return;
+    const { data } = await supabase
+      .from("reminders")
+      .select("*, inventory_lists(name), locations(name)")
+      .eq("restaurant_id", currentRestaurant.id)
+      .eq("is_enabled", true)
+      .not("inventory_list_id", "is", null);
+    if (data) setSchedules(data);
+  }, [currentRestaurant]);
+
   useEffect(() => {
     if (!currentRestaurant) return;
     supabase.from("inventory_lists").select("*").eq("restaurant_id", currentRestaurant.id)
@@ -153,7 +217,13 @@ export default function EnterInventoryPage() {
           if (data.length > 0 && !selectedList) setSelectedList(data[0].id);
         }
       });
+    fetchSchedules();
   }, [currentRestaurant]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setCounterTick(t => t + 1), 60000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!currentRestaurant) return;
@@ -647,6 +717,21 @@ export default function EnterInventoryPage() {
   };
 
   const isManagerOrOwner = currentRestaurant?.role === "OWNER" || currentRestaurant?.role === "MANAGER";
+
+  const nextSchedule = useMemo(() => {
+    if (!schedules.length) return null;
+    let closest: any = null;
+    let closestDate: Date | null = null;
+    for (const s of schedules) {
+      const d = computeNextOccurrence(s);
+      if (d && (!closestDate || d < closestDate)) {
+        closestDate = d;
+        closest = { ...s, nextDate: d };
+      }
+    }
+    return closest;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schedules]); // counterTick intentionally omitted; useMemo recomputes when schedules change
 
   const mappingMode = categoryMode === "list_order" ? "list_order"
     : categoryMode === "custom-categories" ? "custom-categories"
@@ -1173,6 +1258,46 @@ export default function EnterInventoryPage() {
           </Button>
         </div>
       </div>
+
+      {/* ── NEXT SCHEDULED COUNT PANEL ── */}
+      {nextSchedule && (() => {
+        const status = getScheduleStatus(nextSchedule.nextDate);
+        const statusConfig = {
+          upcoming: { label: "Upcoming", cls: "bg-primary/10 text-primary border-primary/20" },
+          ready:    { label: "Ready to Start", cls: "bg-success/10 text-success border-success/30" },
+          overdue:  { label: "Overdue", cls: "bg-destructive/10 text-destructive border-destructive/30" },
+        }[status];
+        const existingSession = inProgressSessions.find(s => s.inventory_list_id === nextSchedule.inventory_list_id);
+        return (
+          <div className={`rounded-lg border p-4 ${status === "overdue" ? "border-destructive/30 bg-destructive/5" : status === "ready" ? "border-success/30 bg-success/5" : "border-border bg-card"}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <CalendarClock className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Next Scheduled Count</p>
+                  <Badge className={`text-[10px] border ${statusConfig.cls}`}>{statusConfig.label}</Badge>
+                </div>
+                <p className="font-semibold text-sm">{nextSchedule.name}</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {nextSchedule.inventory_lists?.name}
+                  {nextSchedule.locations?.name ? ` · ${nextSchedule.locations.name}` : ""}
+                  {" · "}
+                  {nextSchedule.nextDate.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}
+                  {" at "}
+                  {nextSchedule.nextDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {status === "overdue" ? "This count is past due" : `Starts in ${formatCountdown(nextSchedule.nextDate)}`}
+                </p>
+              </div>
+              <Button size="sm" className="shrink-0 h-8 text-xs gap-1.5 bg-gradient-amber shadow-amber"
+                onClick={() => existingSession ? openEditor(existingSession) : setStartOpen(true)}>
+                {existingSession ? <><ChevronRight className="h-3.5 w-3.5" />Continue Count</> : <><Play className="h-3.5 w-3.5" />Start Now</>}
+              </Button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── SECTION A: TODAY — In Progress ── */}
       <div>
