@@ -1,326 +1,475 @@
 
-# Inventory Management — Restaurant-Grade UI/UX Redesign
+# Inventory Schedule — Settings Integration + Auto-Session Creation
 
-## Overview
+## What This Builds
 
-This is a pure UI/UX polish pass. No database changes, no new routes, no schema migrations. All existing logic (autosave, session creation, PAR fetching, smart order, notifications) stays intact — we're rebuilding the presentation layer of three files:
-
-1. `EnterInventory.tsx` — Landing + Count Entry editor
-2. `Review.tsx` — Exception-first review screen
-3. `Approved.tsx` — History table (already redesigned; minor polish only)
-
----
-
-## What's Changing and Why
-
-### Current Problems (from code audit)
-
-- **Landing page**: 3 generic titled cards with flat row lists. No visual hierarchy, no progress bar, no "what should I do next" guidance.
-- **Count entry (desktop)**: Shows 6 columns including Unit and Pack Size by default — cluttered. No "Need" column (PAR − Stock). No autosave status in header. Status badge is tucked away. No progress fraction shown.
-- **Count entry (mobile)**: Already card-based — but labels say "Count" not "On Hand". No status summary.
-- **Review.tsx**: List of sessions with View/Approve/Reject side by side. No exception summary cards. No default filter for red/yellow items. Approve button is same size as View.
-- **Approved.tsx**: Already has the expandable table (previous work). Minor polish only needed.
+A fully automated inventory scheduling system that:
+1. Lives in **Settings → Inventory Schedule** (OWNER/MANAGER only)
+2. Shows a **"Next Scheduled Count" panel** on the Inventory Management landing page
+3. **Auto-creates sessions** via the `process-notifications` Edge Function
+4. Sends **lead-time + overdue notifications** using the existing `notifications` table
 
 ---
 
-## File 1: `src/pages/app/inventory/EnterInventory.tsx`
+## Database Migration (4 columns on `reminders`)
 
-### A) Landing Page — "Command Center" (lines 1230–1514 render block)
+The `reminders` table currently has: `id`, `restaurant_id`, `location_id`, `created_by`, `name`, `days_of_week`, `time_of_day`, `timezone`, `is_enabled`, `created_at`, `updated_at`, `recipients_mode`.
 
-**Section 1 — "Today" (In Progress)**
+The migration adds:
 
-Replace the current generic card with a focused command card:
+```sql
+ALTER TABLE public.reminders
+  ADD COLUMN IF NOT EXISTS inventory_list_id uuid REFERENCES public.inventory_lists(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS auto_create_session boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS reminder_lead_minutes integer NOT NULL DEFAULT 60,
+  ADD COLUMN IF NOT EXISTS lock_after_hours integer;
+```
 
-- **Header**: "Today's Count" title + List selector dropdown (existing)
-- **If a session exists**: Show a single prominent session card with:
-  - Large session name + list name + location
-  - Progress bar: `counted / total` (where counted = items with `current_stock > 0`, total = items.length) — computed from `sessionStats` already fetched
-  - Autosave note (static "autosaved" indicator)
-  - **Primary CTA**: "Continue Count" button (full width, amber gradient)
-  - **Secondary**: "Clear Entries" (outline) + trash icon (ghost, destructive hover)
-  - Status badge: "In Progress" (amber)
-- **If no session**: Single centered call-to-action with "Start Inventory" button
-- **Multiple sessions**: Show first one prominently, others in compact rows below
+No new tables. No RLS changes needed — existing `reminders` policies cover MANAGER+ for write, all members for read.
 
-Implementation: Add a `countedItems` tracker to `sessionStats` — when fetching session items stats, also count `items where current_stock IS NOT NULL AND current_stock > 0` and `total items count`. Change `statsMap` to include `counted` and `total` fields.
+---
+
+## Architecture Overview
+
+```text
+Settings → Inventory Schedule page
+  │
+  ├── Reads/writes: reminders (extended with 4 new cols)
+  │                 reminder_targets (custom user assignment)
+  │                 inventory_lists, locations (for dropdowns)
+  │
+EnterInventory.tsx
+  │
+  ├── Reads: reminders WHERE inventory_list_id IS NOT NULL
+  ├── Computes: next occurrence (client-side, same computeNextOccurrence helper)
+  └── Shows: "Next Scheduled Count" panel with countdown + status + action
+
+process-notifications Edge Function (extended)
+  │
+  ├── Section 2 (existing reminders loop) — EXTENDED:
+  │     At lead_time before session: fire SCHEDULE_REMINDER notification
+  │     At session time:
+  │       if auto_create_session: create inventory_session (IN_PROGRESS)
+  │       fire SCHEDULE_READY notification to recipients
+  │
+  └── Section 4 (NEW — overdue check):
+        For schedules with lock_after_hours set,
+        find sessions that are still IN_PROGRESS past lock window,
+        send SCHEDULE_OVERDUE notification to managers
+```
+
+---
+
+## Files to Create / Modify
+
+### New File: `src/pages/app/settings/InventorySchedule.tsx`
+
+A self-contained component (default export + named export `InventoryScheduleSection`) that mirrors the pattern of `ReminderSettings.tsx`.
+
+**Card list layout** — each schedule shows as a professional card:
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Weekly Count – Main Kitchen                    [Active] badge  │
+│  Main Kitchen List · Main Location                              │
+│  Mon  Wed  Fri   ·   9:00 PM EST                               │
+│  Auto-session ON · Remind 1 hr before                           │
+│                             [Edit] [Pause/Resume] [Delete]      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Create/Edit Dialog fields:**
+- Schedule Name (text input)
+- Inventory List (Select from `inventory_lists`)
+- Location (Select from `locations`, optional)
+- Recurrence type: `Weekly` / `Twice Weekly` / `Monthly`
+  - Weekly → badge toggles for 1 day (only 1 can be selected)
+  - Twice Weekly → badge toggles, up to 2 days
+  - Monthly → number input 1–31 (stored as `days_of_week: ["DAY_1", "DAY_15"]` convention — we use a separate `recurrence_type` and `monthly_day` in the UI but store as `days_of_week` JSON for the edge function to parse)
+- Time input (type="time") + Timezone select
+- Recipients mode (Owners & Managers / All / Custom) + custom user checkboxes
+- Auto-create session toggle (Switch)
+- Reminder lead time (Select: 1 hr / 2 hr / 4 hr) — maps to `reminder_lead_minutes`: 60 / 120 / 240
+- Lock session after X hours (optional number input, only shown when auto-create ON)
+
+**Key implementation details:**
+- `fetchAll` queries `reminders WHERE inventory_list_id IS NOT NULL` to distinguish inventory schedules from plain reminders
+- `handleSave` writes to `reminders` including the 4 new columns
+- Recurrence "Monthly" stores the day as `days_of_week: ["MONTHLY_${day}"]` — a string convention the edge function also reads
+
+**State shape:**
+```typescript
+const [form, setForm] = useState({
+  name: "",
+  inventory_list_id: "",
+  location_id: "",
+  recurrence_type: "weekly" as "weekly" | "twice_weekly" | "monthly",
+  days_of_week: [] as string[],
+  monthly_day: 1,
+  time_of_day: "09:00",
+  timezone: "America/New_York",
+  is_enabled: true,
+  recipients_mode: "OWNERS_MANAGERS" as "OWNERS_MANAGERS" | "ALL" | "CUSTOM",
+  target_user_ids: [] as string[],
+  auto_create_session: false,
+  reminder_lead_minutes: 60,
+  lock_after_hours: null as number | null,
+});
+```
+
+---
+
+### Modified File: `src/pages/app/Settings.tsx`
+
+Add "Inventory Schedule" to `NAV_ITEMS` — only for managers:
 
 ```typescript
-// In fetchSessions, extend statsMap
-statsMap[row.session_id].qty += Number(row.current_stock ?? 0);
-if (row.current_stock != null && Number(row.current_stock) > 0) {
-  statsMap[row.session_id].counted = (statsMap[row.session_id].counted || 0) + 1;
+import { CalendarClock } from "lucide-react";
+
+// In NAV_ITEMS array, after "imports":
+{ key: "schedule", label: "Inventory Schedule", icon: CalendarClock },
+```
+
+Render the section with role guard:
+```typescript
+{section === "schedule" && isManager && (
+  <InventoryScheduleSection restaurantId={currentRestaurant?.id} isManager={isManager} />
+)}
+```
+
+The `InventoryScheduleSection` is the named export from the new file. The nav item is only rendered for managers via:
+```typescript
+// In the left nav map:
+{NAV_ITEMS.filter(item => {
+  if (item.key === "schedule") return isManager;
+  if (item.key === "danger") return true; // already shows for all
+  return true;
+}).map(item => ...)}
+```
+
+---
+
+### Modified File: `src/pages/app/inventory/EnterInventory.tsx`
+
+**New state:**
+```typescript
+const [schedules, setSchedules] = useState<any[]>([]);
+const [locations, setLocations] = useState<any[]>([]);
+```
+
+**New `fetchSchedules` function** (called once at mount alongside `fetchSessions`):
+```typescript
+const fetchSchedules = useCallback(async () => {
+  if (!currentRestaurant) return;
+  const { data } = await supabase
+    .from("reminders")
+    .select("*, inventory_lists(name), locations(name)")
+    .eq("restaurant_id", currentRestaurant.id)
+    .eq("is_enabled", true)
+    .not("inventory_list_id", "is", null);
+  if (data) setSchedules(data);
+}, [currentRestaurant]);
+```
+
+**`computeNextOccurrence` helper** (pure function at file top):
+```typescript
+function computeNextOccurrence(schedule: any): Date | null {
+  const dayMap: Record<string, number> = { SUN: 0, MON: 1, TUE: 2, WED: 3, THU: 4, FRI: 5, SAT: 6 };
+  const tzOffsets: Record<string, number> = {
+    "America/New_York": -5, "America/Chicago": -6,
+    "America/Denver": -7, "America/Los_Angeles": -8,
+  };
+  const days: string[] = schedule.days_of_week || [];
+  const [h, m] = (schedule.time_of_day || "09:00").split(":").map(Number);
+  const offset = tzOffsets[schedule.timezone] ?? -5;
+  const now = new Date();
+
+  // Monthly schedule
+  const monthlyDay = days.find(d => d.startsWith("MONTHLY_"));
+  if (monthlyDay) {
+    const day = parseInt(monthlyDay.split("_")[1]);
+    const candidate = new Date(now.getFullYear(), now.getMonth(), day, h - offset, m);
+    if (candidate <= now) candidate.setMonth(candidate.getMonth() + 1);
+    return candidate;
+  }
+
+  // Weekly / Twice Weekly
+  for (let i = 0; i <= 7; i++) {
+    const candidate = new Date(now);
+    candidate.setDate(now.getDate() + i);
+    const candidateDay = Object.keys(dayMap).find(k => dayMap[k] === candidate.getDay());
+    if (candidateDay && days.includes(candidateDay)) {
+      candidate.setHours(h, m, 0, 0); // local hours
+      if (candidate > now) return candidate;
+    }
+  }
+  return null;
 }
-statsMap[row.session_id].total = (statsMap[row.session_id].total || 0) + 1;
 ```
 
-**Section 2 — "Needs Review" (IN_REVIEW)**
-
-- Only render this section if `isManagerOrOwner` is true
-- If staff → section hidden entirely
-- Each review session becomes a compact horizontal row:
-  - Left: session name (bold) + list name + date (small muted)
-  - Center: qty badge (e.g., "12.5 cases")
-  - Right: `Review` button (primary), then a 3-dot `DropdownMenu` with Approve and Reject
-- Section header: "Needs Review" + count badge showing number of pending sessions
-
-**Section 3 — "History" (APPROVED)**
-
-- Clean table layout (no cards)
-- Filter dropdown: Last 7 / 30 / 90 days (add 7 days option — currently missing)
-- Rows show: session name, list, date, qty
-- 3-dot menu per row: View, Duplicate, Create Smart Order
-- No inline approve/reject (these are done)
-
----
-
-### B) Count Entry Screen — "Fast Entry Mode" (lines 764–1074 activeSession block)
-
-**Sticky Header (top bar) redesign**
-
-Current header has: back button, name, badge, category mode dropdown, search, filter toggle, category chips, desktop actions.
-
-Redesign into 2 distinct sticky layers:
-
-**Layer 1 — Identity bar** (always sticky):
+**`nextSchedule` computed value** (via `useMemo`):
+```typescript
+const nextSchedule = useMemo(() => {
+  if (!schedules.length) return null;
+  let closest: any = null;
+  let closestDate: Date | null = null;
+  for (const s of schedules) {
+    const d = computeNextOccurrence(s);
+    if (d && (!closestDate || d < closestDate)) {
+      closestDate = d;
+      closest = { ...s, nextDate: d };
+    }
+  }
+  return closest;
+}, [schedules]);
 ```
-[← Back]  [Session Name]        [In Progress]    [Saved ✓]  [Submit for Review →]
-           Main Kitchen List
+
+**Status logic:**
+```typescript
+function getScheduleStatus(nextDate: Date): "upcoming" | "ready" | "overdue" {
+  const diffMs = nextDate.getTime() - Date.now();
+  if (diffMs < 0) return "overdue";
+  if (diffMs < 60 * 60 * 1000) return "ready"; // within 1 hour
+  return "upcoming";
+}
+
+function formatCountdown(nextDate: Date): string {
+  const diffMs = nextDate.getTime() - Date.now();
+  if (diffMs <= 0) return "Now";
+  const h = Math.floor(diffMs / 3600000);
+  const m = Math.floor((diffMs % 3600000) / 60000);
+  if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
 ```
-- Left: back arrow + session name (bold) + list name (small, muted)
-- Center-right: status badge
-- Right: autosave status ("Saving..." animate-pulse when savingId active, "Saved ✓" when savedId active, else invisible placeholder)
-- Far right: "Submit for Review" button — always visible, amber gradient, disabled when items empty
 
-**Layer 2 — Toolbar** (sticky below layer 1):
-```
-[🔍 Search ___________] [All][Cooler][Dry][Frozen]   [Uncounted ○] [↕ List Order ▾] [⊞]
-```
-- Search input (flex-1)
-- Category chips (horizontal scroll, no-scrollbar)
-- "Uncounted" toggle chip
-- Sort/View dropdown (List Order / Custom AI / My Categories)
-- View toggle: Table icon / Compact icon (toggles between desktop table and mobile card layout even on desktop)
-
-**Desktop table columns** (NEW — reduced from 6 to 4 default):
-
-| Column | Notes |
-|---|---|
-| Item | item_name bold + pack_size below in muted smaller text |
-| On Hand | Large numeric input (existing logic) |
-| PAR | Read-only (from approvedParMap) |
-| Need | Computed: `max(0, PAR - On Hand)`, colored red if > 0 |
-| Status | Risk badge: High/Medium/Low/No PAR |
-
-Remove from default view: `Category`, `Unit`, `Pack Size` (pack_size moves under item name). These are still shown in mobile cards.
-
-**Row visual priority**:
-- High risk rows: subtle `bg-destructive/5` row background + red badge
-- Medium: `bg-warning/5`
-- Low/No PAR: default white/card background
-
-**Input behavior improvements**:
-- `onFocus` → `e.target.select()` (already done — keep)
-- `step={0.1}` (currently 0.01 — change to 0.1 for cleaner increments, still allows typing 0.05 manually)
-- Remove `max={100}` clamp in `handleUpdateStock` — restaurant items can exceed 100 cases
-- `Enter` / `ArrowDown` advances to next row's On Hand input (existing `handleKeyDown` — keep)
-
-**Mobile card layout improvements**:
-- Label changes: "Count" → "On Hand"
-- Add "Need" value next to PAR: show computed PAR − stock in amber if positive
-- Autosave status shown inline on each card (existing savingId/savedId — keep)
-
-**Bottom sticky bar (mobile)** — keep existing Clear + Submit layout.
-
-**Progress indicator** in sticky header (desktop + mobile):
-```
-14 / 32 counted
-```
-Computed from: `items.filter(i => i.current_stock != null && Number(i.current_stock) > 0).length` / `items.length`
-
----
-
-## File 2: `src/pages/app/inventory/Review.tsx`
-
-### Exception-First Review UI
-
-**Current state**: Simple list of session cards with View/Approve/Reject buttons. No summary.
-
-**Redesign**:
-
-**Top summary bar** (only shows when `viewItems` is open OR computed across all sessions):
-When viewing a specific session (dialog open), replace the plain dialog header with:
-- 4 metric cards: Red count, Yellow count, No PAR count, Total Suggested Order Value
-- Default filter toggle: "Exceptions only" (pre-selected) vs "All items"
-- Approve button: **top right, prominent**, amber or green gradient, always visible
-
-**Session list** (outer Review page, not in dialog):
-- Compact rows (same as the "Needs Review" section redesign above, since Review.tsx is the dedicated manager route)
-- Each row: session name + list + date + qty badge
-- Primary action: Review (opens dialog) — full style button
-- Secondary actions in 3-dot menu: Approve directly, Reject
-
-**Inside the view dialog**:
-- Risk summary cards (already exists, keep)
-- **NEW**: "Exceptions only" toggle chip — when ON, filter table to only show High + Medium risk rows
-- **NEW**: Filter state `showOnlyExceptions` defaults to `true` when red/yellow items exist
-- Approve button: Move from outside dialog to **inside dialog header**, right aligned, prominent green
-
-**Columns in dialog table** (already good — keep):
-Item | Category | Pack Size | Stock (editable) | PAR | Risk | Suggested Order
-
----
-
-## File 3: `src/pages/app/inventory/Approved.tsx`
-
-The expandable table design from the previous implementation is already solid. Minor polish:
-
-- Add the "Last 7 days" option to the filter (currently `EnterInventory.tsx` has this filter, not `Approved.tsx` which shows all time)
-- Add an empty-state illustration if sessions.length === 0 that says "No approved sessions yet — approved inventory counts will appear here"
-- Session header rows: Show a subtle item count badge next to session name when expanded
-
----
-
-## Detailed Component Breakdown
-
-### New helper: `ProgressBar` (inline, not a separate file)
+**"Next Scheduled Count" panel** — placed directly above the "Today's count" section label in the landing page render:
 
 ```tsx
-const ProgressBar = ({ counted, total }: { counted: number; total: number }) => {
-  const pct = total > 0 ? Math.round((counted / total) * 100) : 0;
+{nextSchedule && (() => {
+  const status = getScheduleStatus(nextSchedule.nextDate);
+  const statusConfig = {
+    upcoming: { label: "Upcoming", badgeClass: "bg-blue-500/10 text-blue-600 border-blue-200" },
+    ready:    { label: "Ready to Start", badgeClass: "bg-success/10 text-success border-success/30" },
+    overdue:  { label: "Overdue", badgeClass: "bg-destructive/10 text-destructive border-destructive/30" },
+  }[status];
+
+  // Check if there's already a session for this list today
+  const todayStr = new Date().toDateString();
+  const existingSession = inProgressSessions.find(s =>
+    s.inventory_list_id === nextSchedule.inventory_list_id
+  );
+
   return (
-    <div>
-      <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
-        <span>{counted} / {total} counted</span>
-        <span>{pct}%</span>
-      </div>
-      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-        <div
-          className="h-full rounded-full bg-gradient-amber transition-all duration-300"
-          style={{ width: `${pct}%` }}
-        />
+    <div className={`rounded-lg border p-4 ${
+      status === "overdue" ? "border-destructive/30 bg-destructive/5" :
+      status === "ready" ? "border-success/30 bg-success/5" :
+      "border-border bg-card"
+    }`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Next Scheduled Count</p>
+            <Badge className={`text-[10px] border ${statusConfig.badgeClass}`}>{statusConfig.label}</Badge>
+          </div>
+          <p className="font-semibold text-sm">{nextSchedule.name}</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            {nextSchedule.inventory_lists?.name}
+            {nextSchedule.locations?.name ? ` · ${nextSchedule.locations.name}` : ""}
+            {" · "}
+            {nextSchedule.nextDate.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}
+            {" at "}
+            {nextSchedule.nextDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            {status === "overdue" ? "This count is past due" : `Starts in ${formatCountdown(nextSchedule.nextDate)}`}
+          </p>
+        </div>
+        <Button
+          size="sm"
+          className={`shrink-0 h-8 text-xs gap-1.5 ${
+            existingSession ? "bg-gradient-amber shadow-amber" : "bg-gradient-amber shadow-amber"
+          }`}
+          onClick={() => existingSession ? openEditor(existingSession) : setStartOpen(true)}
+        >
+          {existingSession ? (
+            <><ChevronRight className="h-3.5 w-3.5" />Continue Count</>
+          ) : (
+            <><Play className="h-3.5 w-3.5" />Start Now</>
+          )}
+        </Button>
       </div>
     </div>
   );
-};
+})()}
 ```
 
-### Landing Page Session Card (Today section)
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Monday AM Count              [In Progress]                  │
-│  Main Kitchen List                                           │
-│                                                              │
-│  ████████████░░░░░░  14 / 32 counted  44%                   │
-│                                                              │
-│  [Continue Count ─────────────]  [Clear]  [🗑]              │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Needs Review Row
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Weekly Count – Bar         Jan 20   12.5 cases  [Review]  ⋮│
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Count Entry Desktop Table
-
-```
-┌───────────────────────────────────────────────────────┐
-│ Item               │ On Hand │ PAR │ Need │  Status   │
-├───────────────────────────────────────────────────────┤
-│ Chicken Breast     │  [3.5_] │  8  │  4.5 │ [🔴 High] │  ← red row bg
-│ 6/10lb Case        │         │     │      │           │
-├───────────────────────────────────────────────────────┤
-│ Romaine Lettuce    │  [2.0_] │  3  │  1.0 │ [🟡 Med]  │  ← yellow row bg
-│ 24ct              │         │     │      │           │
-├───────────────────────────────────────────────────────┤
-│ Canola Oil         │  [5.0_] │  4  │   —  │ [🟢 Low]  │  ← default
-│ 4/1gal            │         │     │      │           │
-└───────────────────────────────────────────────────────┘
-```
-
-### Review Dialog Header (after redesign)
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│ Monday AM Count — Review         [Approve ✓] [X close]       │
-│                                                               │
-│ [🔴 3 High] [🟡 2 Medium] [⬜ 1 No PAR]  Total Need: 18 cases│
-│                                                               │
-│ [Exceptions only ✓]  [Show all]                              │
-└──────────────────────────────────────────────────────────────┘
-```
+A `useEffect` adds a 60-second interval to force a re-render and update the countdown display.
 
 ---
 
-## State Changes Needed
+### Modified File: `supabase/functions/process-notifications/index.ts`
 
-### `EnterInventory.tsx`
+**Section 2 — Existing reminders loop — EXTEND:**
 
-**Add to state**:
+After the current reminder fires notifications to recipients, add auto-session logic:
+
 ```typescript
-const [showExceptionsOnly, setShowExceptionsOnly] = useState(false);
-const [viewToggle, setViewToggle] = useState<"table" | "compact">("table"); // allows forcing compact on desktop
-```
+// --- Auto-create session if this is an inventory schedule ---
+if (reminder.inventory_list_id && reminder.auto_create_session) {
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
 
-**Extend `sessionStats`**:
-```typescript
-// Change type:
-const [sessionStats, setSessionStats] = useState<Record<string, { qty: number; totalValue: number; counted: number; total: number }>>({});
+  const { data: existingSession } = await supabase
+    .from("inventory_sessions")
+    .select("id")
+    .eq("restaurant_id", reminder.restaurant_id)
+    .eq("inventory_list_id", reminder.inventory_list_id)
+    .gte("created_at", todayStart.toISOString())
+    .limit(1);
 
-// In fetchSessions statsMap loop:
-statsMap[row.session_id].total = (statsMap[row.session_id].total || 0) + 1;
-if (row.current_stock !== null && Number(row.current_stock) > 0) {
-  statsMap[row.session_id].counted = (statsMap[row.session_id].counted || 0) + 1;
+  if (!existingSession?.length) {
+    const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    await supabase.from("inventory_sessions").insert({
+      restaurant_id: reminder.restaurant_id,
+      inventory_list_id: reminder.inventory_list_id,
+      location_id: reminder.location_id || null,
+      name: `${reminder.name} – ${dateStr}`,
+      status: "IN_PROGRESS",
+      created_by: null, // system-created
+    });
+    results.push(`Auto-created session: ${reminder.name} – ${dateStr}`);
+  }
 }
 ```
 
-**Remove clamp in `handleUpdateStock`**:
+**Lead-time reminder** — at `now - lead_minutes` matching the schedule time, fire a SCHEDULE_REMINDER notification. This uses a second time match check with the lead offset applied:
 ```typescript
-// Current (line 318):
-const clamped = Math.min(100, Math.max(0, stock));
-// Change to:
-const clamped = Math.max(0, stock); // no max cap
+// Check lead-time window
+const leadMin = reminder.reminder_lead_minutes ?? 60;
+const leadUtcHour = ((targetHour - offset - Math.floor(leadMin / 60)) + 48) % 24;
+const leadTargetMin = (targetMin - (leadMin % 60) + 60) % 60;
+
+if (nowUTC === leadUtcHour && Math.abs(nowMin - leadTargetMin) <= 4 && reminder.inventory_list_id) {
+  // Fire lead-time notifications with type "SCHEDULE_REMINDER"
+  for (const userId of recipientUserIds) {
+    await supabase.from("notifications").insert({
+      restaurant_id: reminder.restaurant_id,
+      location_id: reminder.location_id,
+      user_id: userId,
+      type: "SCHEDULE_REMINDER",
+      title: `Inventory starts in ${leadMin >= 60 ? Math.floor(leadMin/60) + " hour" : leadMin + " min"}`,
+      message: `${reminder.name} – ${reminder.restaurants?.name}`,
+      severity: "INFO",
+      data: { reminder_id: reminder.id, lead_minutes: leadMin },
+    });
+  }
+}
 ```
 
-### `Review.tsx`
-
-**Add to state**:
+**NEW Section 4 — Overdue detection:**
 ```typescript
-const [showExceptionsOnly, setShowExceptionsOnly] = useState(true);
-```
+// ─── 4) Process Overdue Inventory Schedules ───
+const { data: schedules } = await supabase
+  .from("reminders")
+  .select("*, restaurants(name)")
+  .eq("is_enabled", true)
+  .not("inventory_list_id", "is", null)
+  .not("lock_after_hours", "is", null);
 
-**Filtered items in dialog**:
-```typescript
-const displayedItems = showExceptionsOnly && viewItems
-  ? viewItems.filter(item => {
-      const risk = getRisk(Number(item.current_stock ?? 0), item.approved_par);
-      return risk.label === "High" || risk.label === "Medium";
-    })
-  : viewItems;
-// fallback: if no exceptions, show all
-const effectiveItems = (showExceptionsOnly && displayedItems?.length === 0) ? viewItems : displayedItems;
+for (const schedule of schedules || []) {
+  const lockAfterHours = schedule.lock_after_hours;
+  const cutoffTime = new Date(now.getTime() - lockAfterHours * 60 * 60 * 1000);
+
+  const { data: overdueSessions } = await supabase
+    .from("inventory_sessions")
+    .select("id, name, created_at")
+    .eq("restaurant_id", schedule.restaurant_id)
+    .eq("inventory_list_id", schedule.inventory_list_id)
+    .eq("status", "IN_PROGRESS")
+    .lt("created_at", cutoffTime.toISOString());
+
+  for (const session of overdueSessions || []) {
+    // Check if already sent overdue notification for this session
+    const { data: existing } = await supabase
+      .from("notifications")
+      .select("id")
+      .eq("restaurant_id", schedule.restaurant_id)
+      .eq("type", "SCHEDULE_OVERDUE")
+      .contains("data", { session_id: session.id })
+      .limit(1);
+    if (existing?.length) continue;
+
+    // Notify managers
+    const managerIds = await resolveRecipients(supabase, schedule.restaurant_id, "OWNERS_MANAGERS", []);
+    for (const userId of managerIds) {
+      await supabase.from("notifications").insert({
+        restaurant_id: schedule.restaurant_id,
+        user_id: userId,
+        type: "SCHEDULE_OVERDUE",
+        title: "Inventory overdue",
+        message: `${session.name} has been in progress for over ${lockAfterHours} hours`,
+        severity: "WARNING",
+        data: { session_id: session.id, reminder_id: schedule.id },
+      });
+    }
+    results.push(`Sent overdue notification for session: ${session.name}`);
+  }
+}
 ```
 
 ---
 
-## Summary of All Changes
+## File Summary
 
-| File | Section | Change Type |
+| File | Type | What Changes |
 |---|---|---|
-| `EnterInventory.tsx` | `fetchSessions` | Extend stats to include `counted` + `total` |
-| `EnterInventory.tsx` | `handleUpdateStock` | Remove `max(100)` clamp |
-| `EnterInventory.tsx` | Landing render (lines 1230–1314) | Full redesign: Today card with progress bar, Needs Review (manager only) compact rows, History table with 3-dot menus |
-| `EnterInventory.tsx` | Editor sticky header (lines 769–904) | Redesign into 2-layer sticky: identity bar + toolbar |
-| `EnterInventory.tsx` | Desktop table (lines 981–1029) | Reduce to 4 columns (Item+packsize, On Hand, PAR, Need, Status), add row color tinting |
-| `EnterInventory.tsx` | Mobile cards (lines 916–978) | Update labels "Count"→"On Hand", add Need display |
-| `EnterInventory.tsx` | Add state | `viewToggle` + extend `sessionStats` type |
-| `Review.tsx` | Session list (lines 207–253) | Compact rows with 3-dot menu for Approve/Reject |
-| `Review.tsx` | View dialog (lines 255–343) | Add exceptions toggle, move Approve button into dialog header, add total suggested order metric card |
-| `Review.tsx` | Add state | `showExceptionsOnly` defaulting to `true` |
-| `Approved.tsx` | Empty state | Polish empty state message |
+| DB migration | SQL | Add 4 columns to `reminders` |
+| `src/pages/app/settings/InventorySchedule.tsx` | **New** | Full schedule management page with card UI and create/edit dialog |
+| `src/pages/app/Settings.tsx` | Modified | Add "Inventory Schedule" nav item (manager-only) + render section |
+| `src/pages/app/inventory/EnterInventory.tsx` | Modified | Add `fetchSchedules`, `computeNextOccurrence`, `nextSchedule` useMemo, countdown panel above Today's Count section |
+| `supabase/functions/process-notifications/index.ts` | Modified | Extend Section 2 (auto-create session + lead-time reminder) + add Section 4 (overdue detection) |
 
-**No database changes. No new files. No route changes. All existing logic preserved.**
+**No new routes. No sidebar changes. No new auth providers. All existing RLS policies remain unchanged.**
+
+---
+
+## Recurrence Storage Convention
+
+Weekly schedules use day codes: `["MON"]`, `["FRI"]`
+Twice Weekly: `["MON", "THU"]`
+Monthly: `["MONTHLY_15"]` — the Edge Function and `computeNextOccurrence` both parse this prefix
+
+This keeps all recurrence data inside the existing `days_of_week jsonb` column without any schema additions beyond the 4 already listed.
+
+---
+
+## UI Design for the New Settings Section
+
+The `InventoryScheduleSection` renders inside the existing Settings right panel, consistent with every other section:
+
+**Empty state:**
+```
+[CalendarClock icon]
+No inventory schedules
+Create a schedule to automate recurring inventory counts for your team.
+[Create Schedule button]
+```
+
+**Populated state — cards grid (2-col on desktop, 1-col mobile):**
+```
+┌─────────────────────────────────────────────────┐
+│  Weekly Count – Main Kitchen        [Active]     │
+│  Main Kitchen List · Downtown                   │
+│  MON  WED  FRI  ·  9:00 PM Eastern             │
+│  Auto-session: ON  ·  Remind 1 hr before        │
+│                        [Edit] [Pause] [Delete]   │
+└─────────────────────────────────────────────────┘
+```
+
+**Dialog — responsive max-w-lg, clean form groups:**
+- Section 1: Name + List + Location
+- Section 2: Recurrence (type toggle + day chips/month input)
+- Section 3: Time + Timezone
+- Section 4: Recipients
+- Section 5: Automation toggles (auto-session switch, lead time select, lock hours input)
