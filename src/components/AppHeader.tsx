@@ -63,7 +63,7 @@ export function AppHeader() {
       <div className="flex-1" />
 
       {/* Restaurant Switcher — only shown if user has multiple restaurants */}
-      {restaurants.length > 1 && (
+      {restaurants.length >= 1 && (
         <DropdownMenu onOpenChange={(open) => { if (!open) setRestaurantSearch(""); }}>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="sm" className="gap-1.5 text-xs h-8 px-2.5">
