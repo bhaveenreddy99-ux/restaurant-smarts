@@ -67,11 +67,19 @@ export function AppSidebar() {
   const location = useLocation();
   const navigate = useNavigate();
   const { signOut } = useAuth();
-  const { currentRestaurant } = useRestaurant();
+  const { currentRestaurant, restaurants } = useRestaurant();
 
   const isActive = (path: string) => location.pathname === path || location.pathname.startsWith(path + "/");
-  const isOwner = currentRestaurant?.role === "OWNER";
-  const isManagerPlus = isOwner || currentRestaurant?.role === "MANAGER";
+
+  // Derive effective role — fall back to highest role across all restaurants
+  // when currentRestaurant is null (portfolio mode or stuck state)
+  const effectiveRole = currentRestaurant?.role
+    ?? (restaurants.some(r => r.role === "OWNER") ? "OWNER"
+      : restaurants.some(r => r.role === "MANAGER") ? "MANAGER"
+      : "STAFF");
+
+  const isOwner = effectiveRole === "OWNER";
+  const isManagerPlus = isOwner || effectiveRole === "MANAGER";
 
   const renderGroup = (label: string, items: typeof mainNav) => (
     <SidebarGroup key={label}>
