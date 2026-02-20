@@ -11,7 +11,7 @@ export type CanonicalField =
 
 export const CANONICAL_FIELDS: { key: CanonicalField; label: string; required?: boolean; numeric?: boolean }[] = [
   { key: "item_name", label: "Item Name", required: true },
-  { key: "vendor_sku", label: "Vendor SKU" },
+  { key: "vendor_sku", label: "Product Number" },
   { key: "category", label: "Category" },
   { key: "unit", label: "Unit / UOM" },
   { key: "pack_size", label: "Pack Size" },

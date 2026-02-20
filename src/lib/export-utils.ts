@@ -18,7 +18,7 @@ interface ExportItem {
 }
 
 const INVENTORY_COLUMNS = [
-  "Item Name", "Vendor SKU", "Category", "Unit", "Pack Size",
+  "Item Name", "Product Number", "Category", "Unit", "Pack Size",
   "Current Stock", "PAR Level", "Lead Time (Days)", "Unit Cost",
 ];
 
