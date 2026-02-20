@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useRestaurant } from "@/contexts/RestaurantContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -20,6 +21,7 @@ import { useCategoryMapping } from "@/hooks/useCategoryMapping";
 export default function PARManagementPage() {
   const { currentRestaurant } = useRestaurant();
   const { user } = useAuth();
+  const navigate = useNavigate();
   const isCompact = useIsCompact();
   const [lists, setLists] = useState<any[]>([]);
   const [selectedList, setSelectedList] = useState("");
@@ -38,6 +40,14 @@ export default function PARManagementPage() {
 
   useEffect(() => {
     if (!currentRestaurant) return;
+    // Reset all derived state when restaurant changes to prevent stale data flash
+    setSelectedList("");
+    setSelectedGuide(null);
+    setGuides([]);
+    setItems([]);
+    setCatalogItems([]);
+    setFilterCategory("all");
+    setSearch("");
     setLoading(true);
     supabase.from("inventory_lists").select("*").eq("restaurant_id", currentRestaurant.id)
       .then(({ data }) => { if (data) setLists(data); setLoading(false); });
@@ -211,6 +221,32 @@ export default function PARManagementPage() {
         <Skeleton className="h-6 w-40" />
         <Skeleton className="h-10 w-64" />
         {[1, 2, 3].map(i => <Skeleton key={i} className="h-24 rounded-xl" />)}
+      </div>
+    );
+  }
+
+  if (!loading && lists.length === 0) {
+    return (
+      <div className="space-y-5 animate-fade-in">
+        <div className="page-header">
+          <div>
+            <h1 className="page-title">PAR Management</h1>
+            <p className="page-description">Set target stock levels for each inventory list</p>
+          </div>
+        </div>
+        <Card>
+          <CardContent className="empty-state py-16">
+            <BookOpen className="empty-state-icon" />
+            <p className="empty-state-title">No inventory lists yet</p>
+            <p className="empty-state-description">Create an inventory list first to start managing PAR levels.</p>
+            <Button
+              className="bg-gradient-amber shadow-amber gap-2 mt-4"
+              onClick={() => navigate("/app/inventory/lists")}
+            >
+              Go to List Management
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     );
   }

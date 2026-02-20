@@ -87,6 +87,7 @@ export function RestaurantProvider({ children }: { children: ReactNode }) {
   };
 
   const fetchRestaurants = async () => {
+    setLoading(true);
     if (!user) {
       setRestaurants([]);
       setCurrentRestaurantState(null);
