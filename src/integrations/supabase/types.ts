@@ -1518,6 +1518,7 @@ export type Database = {
           currency: string
           date_format: string
           id: string
+          logo_url: string | null
           phone: string | null
           restaurant_id: string
           timezone: string
@@ -1530,6 +1531,7 @@ export type Database = {
           currency?: string
           date_format?: string
           id?: string
+          logo_url?: string | null
           phone?: string | null
           restaurant_id: string
           timezone?: string
@@ -1542,6 +1544,7 @@ export type Database = {
           currency?: string
           date_format?: string
           id?: string
+          logo_url?: string | null
           phone?: string | null
           restaurant_id?: string
           timezone?: string

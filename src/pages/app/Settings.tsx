@@ -124,21 +124,54 @@ function GeneralSection({ restaurantId, isManager, restaurantName }: { restauran
   const [form, setForm] = useState({ business_email: "", phone: "", address: "", currency: "USD", timezone: "America/New_York", date_format: "MM/DD/YYYY" });
   const [name, setName] = useState(restaurantName || "");
   const [saving, setSaving] = useState(false);
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [logoUploading, setLogoUploading] = useState(false);
 
   useEffect(() => {
     if (!restaurantId) return;
     setName(restaurantName || "");
     supabase.from("restaurant_settings").select("*").eq("restaurant_id", restaurantId).maybeSingle().then(({ data }) => {
-      if (data) setForm({ business_email: data.business_email || "", phone: data.phone || "", address: data.address || "", currency: data.currency, timezone: data.timezone, date_format: data.date_format });
+      if (data) {
+        setForm({ business_email: data.business_email || "", phone: data.phone || "", address: data.address || "", currency: data.currency, timezone: data.timezone, date_format: data.date_format });
+        setLogoUrl((data as any).logo_url || null);
+      }
     });
   }, [restaurantId, restaurantName]);
+
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !restaurantId) return;
+    setLogoUploading(true);
+    const ext = file.name.split(".").pop();
+    const path = `${restaurantId}/logo.${ext}`;
+    const { error: uploadError } = await supabase.storage.from("restaurant-logos").upload(path, file, { upsert: true });
+    if (uploadError) { toast.error("Failed to upload logo"); setLogoUploading(false); return; }
+    const { data: { publicUrl } } = supabase.storage.from("restaurant-logos").getPublicUrl(path);
+    const { error: saveError } = await supabase.from("restaurant_settings").upsert(
+      { restaurant_id: restaurantId, logo_url: publicUrl } as any,
+      { onConflict: "restaurant_id" }
+    );
+    if (saveError) { toast.error("Failed to save logo"); } else {
+      setLogoUrl(publicUrl);
+      toast.success("Logo updated — refresh sidebar/header to see it");
+    }
+    setLogoUploading(false);
+  };
+
+  const handleRemoveLogo = async () => {
+    if (!restaurantId) return;
+    await supabase.from("restaurant_settings").upsert(
+      { restaurant_id: restaurantId, logo_url: null } as any,
+      { onConflict: "restaurant_id" }
+    );
+    setLogoUrl(null);
+    toast.success("Logo removed");
+  };
 
   const handleSave = async () => {
     if (!restaurantId || !isManager) return;
     setSaving(true);
-    // Update restaurant name
     await supabase.from("restaurants").update({ name }).eq("id", restaurantId);
-    // Upsert settings
     const { error } = await supabase.from("restaurant_settings").upsert({ restaurant_id: restaurantId, ...form }, { onConflict: "restaurant_id" });
     setSaving(false);
     if (error) toast.error("Failed to save settings");
@@ -148,7 +181,34 @@ function GeneralSection({ restaurantId, isManager, restaurantName }: { restauran
   return (
     <Card>
       <CardHeader><CardTitle className="text-base">Business Profile</CardTitle><CardDescription>Restaurant name, contact details, timezone and currency</CardDescription></CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-5">
+        {/* Logo upload */}
+        <div className="space-y-2">
+          <Label className="text-xs">Restaurant Logo</Label>
+          <div className="flex items-center gap-4">
+            <div className="h-16 w-16 rounded-xl border border-border bg-muted/40 flex items-center justify-center overflow-hidden shrink-0">
+              {logoUrl
+                ? <img src={logoUrl} alt="Restaurant logo" className="h-full w-full object-contain" />
+                : <span className="text-xl font-bold text-muted-foreground">{(name || restaurantName || "R").charAt(0).toUpperCase()}</span>
+              }
+            </div>
+            {isManager && (
+              <div className="flex flex-col gap-1.5">
+                <label className="cursor-pointer">
+                  <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} disabled={logoUploading} />
+                  <span className="inline-flex items-center gap-1.5 text-xs h-8 px-3 rounded-md border border-border bg-background hover:bg-muted/50 transition-colors font-medium cursor-pointer">
+                    {logoUploading ? "Uploading…" : logoUrl ? "Change Logo" : "Upload Logo"}
+                  </span>
+                </label>
+                {logoUrl && (
+                  <button onClick={handleRemoveLogo} className="text-[11px] text-destructive hover:underline text-left">Remove logo</button>
+                )}
+                <p className="text-[11px] text-muted-foreground">PNG, JPG or SVG. Shown in sidebar and header.</p>
+              </div>
+            )}
+          </div>
+        </div>
+
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5"><Label className="text-xs">Restaurant Name</Label><Input value={name} onChange={e => setName(e.target.value)} disabled={!isManager} className="h-9" /></div>
           <div className="space-y-1.5"><Label className="text-xs">Business Email</Label><Input value={form.business_email} onChange={e => setForm(p => ({ ...p, business_email: e.target.value }))} disabled={!isManager} className="h-9" /></div>

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   Package,
@@ -20,6 +21,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { NavLink } from "@/components/NavLink";
 import { useAuth } from "@/contexts/AuthContext";
 import { useRestaurant } from "@/contexts/RestaurantContext";
+import { supabase } from "@/integrations/supabase/client";
 import {
   Sidebar,
   SidebarContent,
@@ -70,6 +72,13 @@ export function AppSidebar() {
   const navigate = useNavigate();
   const { signOut } = useAuth();
   const { currentRestaurant, restaurants } = useRestaurant();
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!currentRestaurant?.id) { setLogoUrl(null); return; }
+    supabase.from("restaurant_settings").select("logo_url").eq("restaurant_id", currentRestaurant.id).maybeSingle()
+      .then(({ data }) => setLogoUrl((data as any)?.logo_url || null));
+  }, [currentRestaurant?.id]);
 
   const isActive = (path: string) => location.pathname === path || location.pathname.startsWith(path + "/");
 
@@ -117,8 +126,11 @@ export function AppSidebar() {
     <Sidebar className="border-r border-sidebar-border bg-sidebar">
       <div className="p-4 pb-2">
         <div className="flex items-center gap-2.5 mb-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sidebar-primary/10">
-            <ChefHat className="h-4.5 w-4.5 text-sidebar-primary" />
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sidebar-primary/10 overflow-hidden shrink-0">
+            {logoUrl
+              ? <img src={logoUrl} alt="Logo" className="h-full w-full object-contain" />
+              : <ChefHat className="h-4.5 w-4.5 text-sidebar-primary" />
+            }
           </div>
           <span className="text-[15px] font-bold text-sidebar-accent-foreground tracking-tight">
             Resta<span className="text-sidebar-primary">rentIQ</span>
