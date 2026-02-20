@@ -12,32 +12,62 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Separator } from "@/components/ui/separator";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { toast } from "sonner";
 import {
-  Settings as SettingsIcon, Building2, MapPin, Package, BookOpen,
+  Building2, MapPin, Package, BookOpen,
   ShoppingCart, FileUp, Users, AlertTriangle, Plus, Trash2, Star,
-  X, Check, Pencil, Power, CalendarClock,
+  X, Check, Pencil, Power, CalendarClock, ChevronRight,
 } from "lucide-react";
 import { InventoryScheduleSection } from "@/pages/app/settings/InventorySchedule";
 
-const NAV_ITEMS = [
-  { key: "general", label: "General", icon: Building2, managerOnly: false },
-  { key: "locations", label: "Locations", icon: MapPin, managerOnly: false },
-  { key: "inventory", label: "Inventory", icon: Package, managerOnly: false },
-  { key: "par", label: "PAR Defaults", icon: BookOpen, managerOnly: false },
-  { key: "smartorder", label: "Smart Order Defaults", icon: ShoppingCart, managerOnly: false },
-  { key: "imports", label: "Imports & Mapping", icon: FileUp, managerOnly: false },
-  { key: "users", label: "Users & Permissions", icon: Users, managerOnly: false },
-  { key: "schedule", label: "Inventory Schedule", icon: CalendarClock, managerOnly: true },
-  { key: "danger", label: "Danger Zone", icon: AlertTriangle, managerOnly: false },
+const TOP_NAV = [
+  { key: "general",   label: "Business Profile",    icon: Building2,    desc: "Restaurant name, contact info, timezone & currency" },
+  { key: "locations", label: "Locations",            icon: MapPin,       desc: "Manage store locations for multi-location inventory" },
+  { key: "inventory", label: "Inventory",            icon: Package,      desc: "Default categories, units, and entry behavior" },
+  { key: "users",     label: "Users & Permissions",  icon: Users,        desc: "Team roles and default location assignments" },
+  { key: "schedule",  label: "Inventory Schedule",   icon: CalendarClock, desc: "Reminders and auto-session scheduling", managerOnly: true },
+];
+
+const ADVANCED_NAV = [
+  { key: "par",        label: "PAR Defaults",        icon: BookOpen,     desc: "Lead time, reorder threshold and auto-apply settings" },
+  { key: "smartorder", label: "Smart Order Defaults", icon: ShoppingCart, desc: "Risk thresholds and automation for order generation" },
+  { key: "imports",    label: "Imports & Mapping",    icon: FileUp,       desc: "Saved column mappings from previous file imports" },
+  { key: "danger",     label: "Danger Zone",          icon: AlertTriangle, desc: "Irreversible actions — delete history or restaurant", ownerOnly: true },
 ];
 
 export default function SettingsPage() {
   const { currentRestaurant } = useRestaurant();
   const { user } = useAuth();
   const [section, setSection] = useState("general");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const isOwner = currentRestaurant?.role === "OWNER";
   const isManager = currentRestaurant?.role === "MANAGER" || isOwner;
+
+  // Auto-open advanced section if an advanced item is selected
+  const handleSelect = (key: string) => {
+    setSection(key);
+    if (ADVANCED_NAV.some(n => n.key === key)) setAdvancedOpen(true);
+  };
+
+  const NavButton = ({ navKey, label, icon: Icon, desc, danger }: { navKey: string; label: string; icon: any; desc: string; danger?: boolean }) => (
+    <button
+      onClick={() => handleSelect(navKey)}
+      className={`w-full flex items-start gap-2.5 px-3 py-2.5 rounded-lg text-left transition-all duration-150 ${
+        section === navKey
+          ? "bg-accent text-accent-foreground font-medium"
+          : danger
+            ? "text-destructive hover:bg-destructive/5"
+            : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+      }`}
+    >
+      <Icon className="h-4 w-4 shrink-0 mt-0.5 opacity-70" />
+      <div className="min-w-0">
+        <p className="text-[13px] leading-tight">{label}</p>
+        <p className={`text-[11px] leading-tight mt-0.5 ${section === navKey ? "text-accent-foreground/60" : "text-muted-foreground/70"}`}>{desc}</p>
+      </div>
+    </button>
+  );
 
   return (
     <div className="animate-fade-in">
@@ -49,33 +79,40 @@ export default function SettingsPage() {
       </div>
       <div className="flex gap-6 min-h-[600px]">
         {/* Left nav */}
-        <nav className="w-52 shrink-0 space-y-1">
-          {NAV_ITEMS.filter(item => !item.managerOnly || isManager).map((item) => (
-            <button
-              key={item.key}
-              onClick={() => setSection(item.key)}
-              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] transition-all duration-150 ${
-                section === item.key
-                  ? "bg-accent text-accent-foreground font-medium"
-                  : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-              } ${item.key === "danger" ? "text-destructive hover:text-destructive" : ""}`}
-            >
-              <item.icon className="h-4 w-4 shrink-0 opacity-70" />
-              {item.label}
-            </button>
+        <nav className="w-56 shrink-0 space-y-0.5">
+          {TOP_NAV.filter(item => !item.managerOnly || isManager).map(item => (
+            <NavButton key={item.key} navKey={item.key} label={item.label} icon={item.icon} desc={item.desc} />
           ))}
+
+          {/* Advanced Settings collapsible — OWNER/MANAGER only */}
+          {isManager && (
+            <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+              <CollapsibleTrigger asChild>
+                <button className="w-full flex items-center justify-between px-3 py-2.5 mt-3 rounded-lg text-left text-[12px] font-semibold uppercase tracking-wide text-muted-foreground/60 hover:bg-muted/30 transition-all">
+                  <span>Advanced Settings</span>
+                  <ChevronRight className={`h-3.5 w-3.5 transition-transform duration-200 ${advancedOpen ? "rotate-90" : ""}`} />
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="space-y-0.5 mt-0.5">
+                {ADVANCED_NAV.filter(n => !n.ownerOnly || isOwner).map(item => (
+                  <NavButton key={item.key} navKey={item.key} label={item.label} icon={item.icon} desc={item.desc} danger={item.key === "danger"} />
+                ))}
+              </CollapsibleContent>
+            </Collapsible>
+          )}
         </nav>
+
         {/* Right content */}
         <div className="flex-1 min-w-0">
-          {section === "general" && <GeneralSection restaurantId={currentRestaurant?.id} isManager={isManager} restaurantName={currentRestaurant?.name} />}
-          {section === "locations" && <LocationsSection restaurantId={currentRestaurant?.id} isManager={isManager} />}
-          {section === "inventory" && <InventorySection restaurantId={currentRestaurant?.id} isManager={isManager} />}
-          {section === "par" && <PARSection restaurantId={currentRestaurant?.id} isManager={isManager} />}
+          {section === "general"    && <GeneralSection restaurantId={currentRestaurant?.id} isManager={isManager} restaurantName={currentRestaurant?.name} />}
+          {section === "locations"  && <LocationsSection restaurantId={currentRestaurant?.id} isManager={isManager} />}
+          {section === "inventory"  && <InventorySection restaurantId={currentRestaurant?.id} isManager={isManager} />}
+          {section === "par"        && <PARSection restaurantId={currentRestaurant?.id} isManager={isManager} />}
           {section === "smartorder" && <SmartOrderSection restaurantId={currentRestaurant?.id} isManager={isManager} />}
-          {section === "imports" && <ImportsSection restaurantId={currentRestaurant?.id} isManager={isManager} />}
-          {section === "users" && <UsersSection restaurantId={currentRestaurant?.id} isOwner={isOwner} isManager={isManager} />}
-          {section === "schedule" && isManager && <InventoryScheduleSection restaurantId={currentRestaurant?.id} isManager={isManager} />}
-          {section === "danger" && <DangerSection restaurantId={currentRestaurant?.id} isOwner={isOwner} isManager={isManager} />}
+          {section === "imports"    && <ImportsSection restaurantId={currentRestaurant?.id} isManager={isManager} />}
+          {section === "users"      && <UsersSection restaurantId={currentRestaurant?.id} isOwner={isOwner} isManager={isManager} />}
+          {section === "schedule"   && isManager && <InventoryScheduleSection restaurantId={currentRestaurant?.id} isManager={isManager} />}
+          {section === "danger"     && isOwner && <DangerSection restaurantId={currentRestaurant?.id} isOwner={isOwner} isManager={isManager} />}
         </div>
       </div>
     </div>
@@ -110,7 +147,7 @@ function GeneralSection({ restaurantId, isManager, restaurantName }: { restauran
 
   return (
     <Card>
-      <CardHeader><CardTitle className="text-base">General Settings</CardTitle><CardDescription>Basic restaurant information</CardDescription></CardHeader>
+      <CardHeader><CardTitle className="text-base">Business Profile</CardTitle><CardDescription>Restaurant name, contact details, timezone and currency</CardDescription></CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5"><Label className="text-xs">Restaurant Name</Label><Input value={name} onChange={e => setName(e.target.value)} disabled={!isManager} className="h-9" /></div>
