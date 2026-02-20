@@ -1,74 +1,81 @@
 
-# Fix: Restaurant Dropdown Still Hidden + Sidebar Role Fallback
+# Use Uploaded RestaurantIQ Logo as Static App Logo
 
-## What Happened
+## What the user wants
+1. Remove the "Restaurant Logo" upload UI from Settings → Business Profile
+2. Use the uploaded `image-2.png` (the RestaurantIQ circuit-tree logo) as a **static, hardcoded** app logo shown in:
+   - Sidebar top-left (replacing the ChefHat icon + dynamic logo fetch)
+   - Header profile avatar area (replacing the dynamic logo/initial)
+   - Browser tab favicon (URL search bar)
 
-The approved plan had three fixes. Only **Fix 1** (RestaurantContext) was saved before the request was cancelled. The other two were never applied:
+## What changes
 
-- `AppHeader.tsx` line 66 still reads `restaurants.length > 1` → dropdown hidden for single-restaurant users
-- `AppSidebar.tsx` lines 70–74 still derive role only from `currentRestaurant?.role` with no fallback → Admin section disappears in portfolio mode
+### 1. Copy the uploaded image into the project
+- Copy `user-uploads://image-2.png` → `public/logo.png` (for favicon)
+- Copy `user-uploads://image-2.png` → `src/assets/logo.png` (for React components)
 
----
-
-## Exact Changes Needed
-
-### Fix A — `src/components/AppHeader.tsx` (line 66)
-
-Change:
-```tsx
-{restaurants.length > 1 && (
-```
-To:
-```tsx
-{restaurants.length >= 1 && (
+### 2. Update `index.html` — Favicon
+Change the favicon link to point to the new logo:
+```html
+<link rel="icon" type="image/png" href="/logo.png" />
 ```
 
-This makes the restaurant chip always visible, even for single-restaurant users. The dropdown still works — for a single restaurant it just shows that restaurant's name with a checkmark.
+### 3. Update `src/components/AppSidebar.tsx`
+- Remove the `useEffect` that fetches `logo_url` from `restaurant_settings` and the `logoUrl` state
+- Remove the `ChefHat` import (no longer needed)
+- Replace the icon block with a static `<img src={logo} />` using the imported asset
+- Keep the "RestaurantIQ" text beside it
 
----
-
-### Fix B — `src/components/AppSidebar.tsx` (lines 70–74)
-
-Add `restaurants` to the destructured context and compute an effective role as a fallback:
-
-Change:
+Before:
 ```tsx
-const { currentRestaurant } = useRestaurant();
+const [logoUrl, setLogoUrl] = useState<string | null>(null);
+useEffect(() => { ...supabase fetch... }, [currentRestaurant?.id]);
 // ...
-const isOwner = currentRestaurant?.role === "OWNER";
-const isManagerPlus = isOwner || currentRestaurant?.role === "MANAGER";
+{logoUrl ? <img src={logoUrl} /> : <ChefHat />}
 ```
 
-To:
+After:
 ```tsx
-const { currentRestaurant, restaurants } = useRestaurant();
+import logo from "@/assets/logo.png";
 // ...
-// Derive effective role — fall back to highest role across all restaurants
-// when currentRestaurant is null (portfolio mode or stuck state)
-const effectiveRole = currentRestaurant?.role
-  ?? (restaurants.some(r => r.role === "OWNER") ? "OWNER"
-    : restaurants.some(r => r.role === "MANAGER") ? "MANAGER"
-    : "STAFF");
-
-const isOwner = effectiveRole === "OWNER";
-const isManagerPlus = isOwner || effectiveRole === "MANAGER";
+<img src={logo} alt="RestaurantIQ" className="h-full w-full object-contain" />
 ```
 
-This ensures the Admin section (Settings, Alert Settings, Reminders) remains visible even if the user is temporarily stuck in portfolio mode.
+### 4. Update `src/components/AppHeader.tsx`
+- Remove the `useEffect` that fetches `logo_url` and the `logoUrl` state
+- Replace the avatar/profile area with the static logo image
 
----
+Before:
+```tsx
+const [logoUrl, setLogoUrl] = useState<string | null>(null);
+useEffect(() => { ...supabase fetch... }, [currentRestaurant?.id]);
+// ...
+{logoUrl ? <img src={logoUrl} /> : <span>{initial}</span>}
+```
 
-## Files Changed
+After:
+```tsx
+import logo from "@/assets/logo.png";
+// ...
+<img src={logo} alt="RestaurantIQ" className="h-full w-full object-contain" />
+```
 
-| File | Line(s) | Change |
-|------|---------|--------|
-| `src/components/AppHeader.tsx` | 66 | `> 1` → `>= 1` |
-| `src/components/AppSidebar.tsx` | 70–74 | Add role fallback from `restaurants` array |
+### 5. Update `src/pages/app/Settings.tsx` — Remove logo upload UI
+- Remove the `logoUrl`, `logoUploading` state variables from `GeneralSection`
+- Remove `handleLogoUpload` and `handleRemoveLogo` functions
+- Remove the "Restaurant Logo" section (lines ~185–210) from the rendered JSX
+- Remove Supabase storage calls related to logo upload
+- Keep all other Business Profile fields (name, email, phone, address, currency, timezone, date format) intact
 
----
+## Files changed
+| File | Change |
+|------|--------|
+| `public/logo.png` | New — copied from user upload (used for favicon) |
+| `src/assets/logo.png` | New — copied from user upload (used in React components) |
+| `index.html` | Update favicon href to `/logo.png` |
+| `src/components/AppSidebar.tsx` | Remove dynamic logo fetch, use static import |
+| `src/components/AppHeader.tsx` | Remove dynamic logo fetch, use static import |
+| `src/pages/app/Settings.tsx` | Remove logo upload section from Business Profile |
 
-## After These Fixes
-
-- The restaurant name chip always shows in the header (even with 1 restaurant)
-- Admin sidebar items (Settings, Alert Settings, Reminders, Staff) are always visible to OWNER/MANAGER users, regardless of portfolio mode state
-- No database changes needed — purely frontend logic fixes
+## No functionality removed
+All other Settings sections (locations, inventory, PAR, smart order, users, danger zone, etc.) remain completely untouched.
