@@ -1,475 +1,209 @@
 
-# Inventory Schedule — Settings Integration + Auto-Session Creation
+# Full Audit: Login → PAR Management — Issues Found & Fixes
 
-## What This Builds
+## Issues Identified
 
-A fully automated inventory scheduling system that:
-1. Lives in **Settings → Inventory Schedule** (OWNER/MANAGER only)
-2. Shows a **"Next Scheduled Count" panel** on the Inventory Management landing page
-3. **Auto-creates sessions** via the `process-notifications` Edge Function
-4. Sends **lead-time + overdue notifications** using the existing `notifications` table
+After tracing the full flow from login page → AuthContext → RestaurantContext → ProtectedRoute → AppLayout → PARManagement, here are the confirmed issues:
 
 ---
 
-## Database Migration (4 columns on `reminders`)
+### Issue 1 — ACTIVE BUG (Console Error): `Skeleton` getting a `ref` in PARManagement
 
-The `reminders` table currently has: `id`, `restaurant_id`, `location_id`, `created_by`, `name`, `days_of_week`, `time_of_day`, `timezone`, `is_enabled`, `created_at`, `updated_at`, `recipients_mode`.
+**Severity:** Warning (renders but produces React errors in console)
 
-The migration adds:
-
-```sql
-ALTER TABLE public.reminders
-  ADD COLUMN IF NOT EXISTS inventory_list_id uuid REFERENCES public.inventory_lists(id) ON DELETE SET NULL,
-  ADD COLUMN IF NOT EXISTS auto_create_session boolean NOT NULL DEFAULT false,
-  ADD COLUMN IF NOT EXISTS reminder_lead_minutes integer NOT NULL DEFAULT 60,
-  ADD COLUMN IF NOT EXISTS lock_after_hours integer;
+**Root cause:** In `PARManagement.tsx` lines 208–216, the loading skeleton uses:
+```tsx
+{[1, 2, 3].map(i => <Skeleton key={i} className="h-24 rounded-xl" />)}
 ```
+The `Skeleton` component in `src/components/ui/skeleton.tsx` is a plain function component (`function Skeleton(...)`) — it does **not** use `React.forwardRef`. However, it spreads `...props` onto a `<div>`, which is fine. The actual error says: "Check the render method of PARManagementPage... at Skeleton."
 
-No new tables. No RLS changes needed — existing `reminders` policies cover MANAGER+ for write, all members for read.
+The problem is that somewhere in the render tree, a `ref` is being passed to `<Skeleton>` without forwardRef. The `skeleton.tsx` component needs to be wrapped in `React.forwardRef` to accept refs properly.
+
+**Fix:** Wrap the `Skeleton` component with `React.forwardRef`.
 
 ---
 
-## Architecture Overview
+### Issue 2 — LOGIC BUG: `AuthContext` calls `getSession` AND `onAuthStateChange` in sequence — potential double state update
 
-```text
-Settings → Inventory Schedule page
-  │
-  ├── Reads/writes: reminders (extended with 4 new cols)
-  │                 reminder_targets (custom user assignment)
-  │                 inventory_lists, locations (for dropdowns)
-  │
-EnterInventory.tsx
-  │
-  ├── Reads: reminders WHERE inventory_list_id IS NOT NULL
-  ├── Computes: next occurrence (client-side, same computeNextOccurrence helper)
-  └── Shows: "Next Scheduled Count" panel with countdown + status + action
+**Severity:** Minor but causes unnecessary double re-renders on load
 
-process-notifications Edge Function (extended)
-  │
-  ├── Section 2 (existing reminders loop) — EXTENDED:
-  │     At lead_time before session: fire SCHEDULE_REMINDER notification
-  │     At session time:
-  │       if auto_create_session: create inventory_session (IN_PROGRESS)
-  │       fire SCHEDULE_READY notification to recipients
-  │
-  └── Section 4 (NEW — overdue check):
-        For schedules with lock_after_hours set,
-        find sessions that are still IN_PROGRESS past lock window,
-        send SCHEDULE_OVERDUE notification to managers
-```
+**Root cause:** In `AuthContext.tsx`, both `onAuthStateChange` AND `getSession` are called. If `getSession` resolves first, it sets session + loading=false. Then `onAuthStateChange` fires and sets it again. The listener should be set up first (which it is), but `setLoading(false)` is called twice — once from the listener and once from `getSession`. This can cause a flicker on the loading screen.
+
+**Fix:** Only rely on `onAuthStateChange` for both the initial session and subsequent changes. Remove the redundant `getSession` call, or ensure loading is only set false once.
 
 ---
 
-## Files to Create / Modify
+### Issue 3 — UX BUG: `ProtectedRoute` redirects to `/demo` if restaurants array is empty — but this happens briefly during loading
 
-### New File: `src/pages/app/settings/InventorySchedule.tsx`
+**Severity:** Low but can cause brief flash/redirect for real users
 
-A self-contained component (default export + named export `InventoryScheduleSection`) that mirrors the pattern of `ReminderSettings.tsx`.
+**Root cause:** The `ProtectedRoute` checks `if (restaurants.length === 0) return <Navigate to="/demo" replace />`. If `restLoading` is false but `restaurants` hasn't been populated yet (e.g., due to a race condition during fetch), the user gets incorrectly redirected to `/demo` before their data loads.
 
-**Card list layout** — each schedule shows as a professional card:
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Weekly Count – Main Kitchen                    [Active] badge  │
-│  Main Kitchen List · Main Location                              │
-│  Mon  Wed  Fri   ·   9:00 PM EST                               │
-│  Auto-session ON · Remind 1 hr before                           │
-│                             [Edit] [Pause/Resume] [Delete]      │
-└─────────────────────────────────────────────────────────────────┘
-```
+The memory note confirms: "a synchronous loading state reset (implemented via useRef tracking the previous user ID)" was added. This mitigates but doesn't fully eliminate the race. The `refetch` from RestaurantContext doesn't reset `loading` back to true before fetching, so there's a brief window where `loading=false` and `restaurants=[]`.
 
-**Create/Edit Dialog fields:**
-- Schedule Name (text input)
-- Inventory List (Select from `inventory_lists`)
-- Location (Select from `locations`, optional)
-- Recurrence type: `Weekly` / `Twice Weekly` / `Monthly`
-  - Weekly → badge toggles for 1 day (only 1 can be selected)
-  - Twice Weekly → badge toggles, up to 2 days
-  - Monthly → number input 1–31 (stored as `days_of_week: ["DAY_1", "DAY_15"]` convention — we use a separate `recurrence_type` and `monthly_day` in the UI but store as `days_of_week` JSON for the edge function to parse)
-- Time input (type="time") + Timezone select
-- Recipients mode (Owners & Managers / All / Custom) + custom user checkboxes
-- Auto-create session toggle (Switch)
-- Reminder lead time (Select: 1 hr / 2 hr / 4 hr) — maps to `reminder_lead_minutes`: 60 / 120 / 240
-- Lock session after X hours (optional number input, only shown when auto-create ON)
-
-**Key implementation details:**
-- `fetchAll` queries `reminders WHERE inventory_list_id IS NOT NULL` to distinguish inventory schedules from plain reminders
-- `handleSave` writes to `reminders` including the 4 new columns
-- Recurrence "Monthly" stores the day as `days_of_week: ["MONTHLY_${day}"]` — a string convention the edge function also reads
-
-**State shape:**
-```typescript
-const [form, setForm] = useState({
-  name: "",
-  inventory_list_id: "",
-  location_id: "",
-  recurrence_type: "weekly" as "weekly" | "twice_weekly" | "monthly",
-  days_of_week: [] as string[],
-  monthly_day: 1,
-  time_of_day: "09:00",
-  timezone: "America/New_York",
-  is_enabled: true,
-  recipients_mode: "OWNERS_MANAGERS" as "OWNERS_MANAGERS" | "ALL" | "CUSTOM",
-  target_user_ids: [] as string[],
-  auto_create_session: false,
-  reminder_lead_minutes: 60,
-  lock_after_hours: null as number | null,
-});
-```
+**Fix:** Add a guard in `RestaurantContext.fetchRestaurants` that resets `loading = true` at the start of the fetch call, and ensures the `ProtectedRoute` check for empty restaurants only runs after `uiStateLoaded.current === true`.
 
 ---
 
-### Modified File: `src/pages/app/Settings.tsx`
+### Issue 4 — FEATURE GAP: PAR Management — No empty state when user has no inventory lists
 
-Add "Inventory Schedule" to `NAV_ITEMS` — only for managers:
+**Severity:** Medium — confusing for new users
 
-```typescript
-import { CalendarClock } from "lucide-react";
+**Root cause:** When `lists.length === 0` and loading is done, the page shows just the header + an empty Select dropdown with no explanation. There's no empty state UI.
 
-// In NAV_ITEMS array, after "imports":
-{ key: "schedule", label: "Inventory Schedule", icon: CalendarClock },
-```
-
-Render the section with role guard:
-```typescript
-{section === "schedule" && isManager && (
-  <InventoryScheduleSection restaurantId={currentRestaurant?.id} isManager={isManager} />
-)}
-```
-
-The `InventoryScheduleSection` is the named export from the new file. The nav item is only rendered for managers via:
-```typescript
-// In the left nav map:
-{NAV_ITEMS.filter(item => {
-  if (item.key === "schedule") return isManager;
-  if (item.key === "danger") return true; // already shows for all
-  return true;
-}).map(item => ...)}
-```
+**Fix:** Add an empty state card when `!loading && lists.length === 0`.
 
 ---
 
-### Modified File: `src/pages/app/inventory/EnterInventory.tsx`
+### Issue 5 — UX BUG: Admin sidebar items (Alert Settings, Reminders) visible to non-managers when in portfolio mode
 
-**New state:**
-```typescript
-const [schedules, setSchedules] = useState<any[]>([]);
-const [locations, setLocations] = useState<any[]>([]);
+**Severity:** Low
+
+**Root cause:** In `AppSidebar.tsx`:
+```tsx
+{isManagerPlus && renderGroup("Admin", isOwner ? adminNav : adminNav.filter(n => n.url === "/app/settings"))}
 ```
+`isManagerPlus` is derived from `currentRestaurant?.role`. When `currentRestaurant` is `null` (portfolio mode), both `isOwner` and `isManagerPlus` are `false`, so the Admin group is hidden. However, **STAFF** users who only have one restaurant still see the sidebar without the admin group being restricted properly — the `currentRestaurant?.role` could be `STAFF` and the filter still shows `/app/settings`. Staff should not see the Settings link at all.
 
-**New `fetchSchedules` function** (called once at mount alongside `fetchSessions`):
-```typescript
-const fetchSchedules = useCallback(async () => {
-  if (!currentRestaurant) return;
-  const { data } = await supabase
-    .from("reminders")
-    .select("*, inventory_lists(name), locations(name)")
-    .eq("restaurant_id", currentRestaurant.id)
-    .eq("is_enabled", true)
-    .not("inventory_list_id", "is", null);
-  if (data) setSchedules(data);
-}, [currentRestaurant]);
-```
+**Fix:** The `adminNav` filter should only show Settings to managers, not all members. Also hide Alert Settings and Reminders from staff.
 
-**`computeNextOccurrence` helper** (pure function at file top):
-```typescript
-function computeNextOccurrence(schedule: any): Date | null {
-  const dayMap: Record<string, number> = { SUN: 0, MON: 1, TUE: 2, WED: 3, THU: 4, FRI: 5, SAT: 6 };
-  const tzOffsets: Record<string, number> = {
-    "America/New_York": -5, "America/Chicago": -6,
-    "America/Denver": -7, "America/Los_Angeles": -8,
-  };
-  const days: string[] = schedule.days_of_week || [];
-  const [h, m] = (schedule.time_of_day || "09:00").split(":").map(Number);
-  const offset = tzOffsets[schedule.timezone] ?? -5;
-  const now = new Date();
+---
 
-  // Monthly schedule
-  const monthlyDay = days.find(d => d.startsWith("MONTHLY_"));
-  if (monthlyDay) {
-    const day = parseInt(monthlyDay.split("_")[1]);
-    const candidate = new Date(now.getFullYear(), now.getMonth(), day, h - offset, m);
-    if (candidate <= now) candidate.setMonth(candidate.getMonth() + 1);
-    return candidate;
-  }
+### Issue 6 — POTENTIAL BUG: `PARManagement` doesn't reset `items` or `guides` when `currentRestaurant` changes
 
-  // Weekly / Twice Weekly
-  for (let i = 0; i <= 7; i++) {
-    const candidate = new Date(now);
-    candidate.setDate(now.getDate() + i);
-    const candidateDay = Object.keys(dayMap).find(k => dayMap[k] === candidate.getDay());
-    if (candidateDay && days.includes(candidateDay)) {
-      candidate.setHours(h, m, 0, 0); // local hours
-      if (candidate > now) return candidate;
-    }
-  }
-  return null;
-}
-```
+**Severity:** Medium — stale data visible briefly when switching restaurants
 
-**`nextSchedule` computed value** (via `useMemo`):
-```typescript
-const nextSchedule = useMemo(() => {
-  if (!schedules.length) return null;
-  let closest: any = null;
-  let closestDate: Date | null = null;
-  for (const s of schedules) {
-    const d = computeNextOccurrence(s);
-    if (d && (!closestDate || d < closestDate)) {
-      closestDate = d;
-      closest = { ...s, nextDate: d };
-    }
-  }
-  return closest;
-}, [schedules]);
-```
+**Root cause:** The PAR page's `useEffect` on `currentRestaurant` resets `loading=true` and fetches lists, but `items`, `guides`, `selectedGuide`, and `selectedList` states are not cleared. When a user switches restaurants from the header switcher, the previous restaurant's guides/items briefly show before the new data loads.
 
-**Status logic:**
-```typescript
-function getScheduleStatus(nextDate: Date): "upcoming" | "ready" | "overdue" {
-  const diffMs = nextDate.getTime() - Date.now();
-  if (diffMs < 0) return "overdue";
-  if (diffMs < 60 * 60 * 1000) return "ready"; // within 1 hour
-  return "upcoming";
-}
+**Fix:** Reset all derived state when `currentRestaurant` changes.
 
-function formatCountdown(nextDate: Date): string {
-  const diffMs = nextDate.getTime() - Date.now();
-  if (diffMs <= 0) return "Now";
-  const h = Math.floor(diffMs / 3600000);
-  const m = Math.floor((diffMs % 3600000) / 60000);
-  if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
-```
+---
 
-**"Next Scheduled Count" panel** — placed directly above the "Today's count" section label in the landing page render:
+## What Will Be Fixed
+
+| # | Issue | File |
+|---|---|---|
+| 1 | `Skeleton` needs `React.forwardRef` | `src/components/ui/skeleton.tsx` |
+| 2 | Double loading state in AuthContext | `src/contexts/AuthContext.tsx` |
+| 3 | ProtectedRoute race condition guard | `src/contexts/RestaurantContext.tsx` |
+| 4 | Empty state for PAR with no lists | `src/pages/app/PARManagement.tsx` |
+| 5 | Admin nav visible to STAFF | `src/components/AppSidebar.tsx` |
+| 6 | Stale data on restaurant switch in PAR | `src/pages/app/PARManagement.tsx` |
+
+---
+
+## Technical Details
+
+### Fix 1 — `skeleton.tsx`
 
 ```tsx
-{nextSchedule && (() => {
-  const status = getScheduleStatus(nextSchedule.nextDate);
-  const statusConfig = {
-    upcoming: { label: "Upcoming", badgeClass: "bg-blue-500/10 text-blue-600 border-blue-200" },
-    ready:    { label: "Ready to Start", badgeClass: "bg-success/10 text-success border-success/30" },
-    overdue:  { label: "Overdue", badgeClass: "bg-destructive/10 text-destructive border-destructive/30" },
-  }[status];
+import * as React from "react";
+import { cn } from "@/lib/utils";
 
-  // Check if there's already a session for this list today
-  const todayStr = new Date().toDateString();
-  const existingSession = inProgressSessions.find(s =>
-    s.inventory_list_id === nextSchedule.inventory_list_id
+const Skeleton = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  ({ className, ...props }, ref) => (
+    <div ref={ref} className={cn("animate-pulse rounded-md bg-muted", className)} {...props} />
+  )
+);
+Skeleton.displayName = "Skeleton";
+
+export { Skeleton };
+```
+
+### Fix 2 — `AuthContext.tsx`
+
+Remove the `getSession` call that races with `onAuthStateChange`. The auth state change listener fires immediately with the current session, so `getSession` is redundant:
+
+```tsx
+useEffect(() => {
+  // onAuthStateChange fires with INITIAL_SESSION event immediately,
+  // carrying the current session — no need for a separate getSession call
+  const { data: { subscription } } = supabase.auth.onAuthStateChange(
+    (_event, session) => {
+      setSession(session);
+      setLoading(false);
+    }
   );
+  return () => subscription.unsubscribe();
+}, []);
+```
 
+### Fix 3 — `RestaurantContext.tsx`
+
+Ensure `fetchRestaurants` always sets `loading = true` at the top before async work, so ProtectedRoute waits properly:
+
+```tsx
+const fetchRestaurants = async () => {
+  setLoading(true);  // ← ADD THIS at the top
+  if (!user) { ... setLoading(false); return; }
+  // rest of fetch ...
+};
+```
+
+### Fix 4 — `PARManagement.tsx` — Empty state for no lists
+
+After the loading check, add:
+```tsx
+if (!loading && lists.length === 0) {
   return (
-    <div className={`rounded-lg border p-4 ${
-      status === "overdue" ? "border-destructive/30 bg-destructive/5" :
-      status === "ready" ? "border-success/30 bg-success/5" :
-      "border-border bg-card"
-    }`}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Next Scheduled Count</p>
-            <Badge className={`text-[10px] border ${statusConfig.badgeClass}`}>{statusConfig.label}</Badge>
-          </div>
-          <p className="font-semibold text-sm">{nextSchedule.name}</p>
-          <p className="text-[11px] text-muted-foreground mt-0.5">
-            {nextSchedule.inventory_lists?.name}
-            {nextSchedule.locations?.name ? ` · ${nextSchedule.locations.name}` : ""}
-            {" · "}
-            {nextSchedule.nextDate.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}
-            {" at "}
-            {nextSchedule.nextDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-          </p>
-          <p className="text-[11px] text-muted-foreground mt-0.5">
-            {status === "overdue" ? "This count is past due" : `Starts in ${formatCountdown(nextSchedule.nextDate)}`}
-          </p>
-        </div>
-        <Button
-          size="sm"
-          className={`shrink-0 h-8 text-xs gap-1.5 ${
-            existingSession ? "bg-gradient-amber shadow-amber" : "bg-gradient-amber shadow-amber"
-          }`}
-          onClick={() => existingSession ? openEditor(existingSession) : setStartOpen(true)}
-        >
-          {existingSession ? (
-            <><ChevronRight className="h-3.5 w-3.5" />Continue Count</>
-          ) : (
-            <><Play className="h-3.5 w-3.5" />Start Now</>
-          )}
-        </Button>
+    <div className="space-y-5 animate-fade-in">
+      <div className="page-header">
+        <h1 className="page-title">PAR Management</h1>
+        ...
       </div>
+      <Card>
+        <CardContent className="empty-state py-16">
+          <BookOpen className="empty-state-icon" />
+          <p className="empty-state-title">No inventory lists yet</p>
+          <p className="empty-state-description">Create an inventory list first before setting PAR levels.</p>
+          <Button onClick={() => navigate("/app/inventory/lists")} ...>
+            Go to List Management
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
-})()}
-```
-
-A `useEffect` adds a 60-second interval to force a re-render and update the countdown display.
-
----
-
-### Modified File: `supabase/functions/process-notifications/index.ts`
-
-**Section 2 — Existing reminders loop — EXTEND:**
-
-After the current reminder fires notifications to recipients, add auto-session logic:
-
-```typescript
-// --- Auto-create session if this is an inventory schedule ---
-if (reminder.inventory_list_id && reminder.auto_create_session) {
-  const todayStart = new Date();
-  todayStart.setUTCHours(0, 0, 0, 0);
-
-  const { data: existingSession } = await supabase
-    .from("inventory_sessions")
-    .select("id")
-    .eq("restaurant_id", reminder.restaurant_id)
-    .eq("inventory_list_id", reminder.inventory_list_id)
-    .gte("created_at", todayStart.toISOString())
-    .limit(1);
-
-  if (!existingSession?.length) {
-    const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    await supabase.from("inventory_sessions").insert({
-      restaurant_id: reminder.restaurant_id,
-      inventory_list_id: reminder.inventory_list_id,
-      location_id: reminder.location_id || null,
-      name: `${reminder.name} – ${dateStr}`,
-      status: "IN_PROGRESS",
-      created_by: null, // system-created
-    });
-    results.push(`Auto-created session: ${reminder.name} – ${dateStr}`);
-  }
 }
 ```
 
-**Lead-time reminder** — at `now - lead_minutes` matching the schedule time, fire a SCHEDULE_REMINDER notification. This uses a second time match check with the lead offset applied:
-```typescript
-// Check lead-time window
-const leadMin = reminder.reminder_lead_minutes ?? 60;
-const leadUtcHour = ((targetHour - offset - Math.floor(leadMin / 60)) + 48) % 24;
-const leadTargetMin = (targetMin - (leadMin % 60) + 60) % 60;
+### Fix 5 — `AppSidebar.tsx` — Admin nav for staff
 
-if (nowUTC === leadUtcHour && Math.abs(nowMin - leadTargetMin) <= 4 && reminder.inventory_list_id) {
-  // Fire lead-time notifications with type "SCHEDULE_REMINDER"
-  for (const userId of recipientUserIds) {
-    await supabase.from("notifications").insert({
-      restaurant_id: reminder.restaurant_id,
-      location_id: reminder.location_id,
-      user_id: userId,
-      type: "SCHEDULE_REMINDER",
-      title: `Inventory starts in ${leadMin >= 60 ? Math.floor(leadMin/60) + " hour" : leadMin + " min"}`,
-      message: `${reminder.name} – ${reminder.restaurants?.name}`,
-      severity: "INFO",
-      data: { reminder_id: reminder.id, lead_minutes: leadMin },
-    });
-  }
-}
+Currently staff see a partial admin nav (just Settings). Fix:
+```tsx
+// Only show Admin section to manager+
+{isManagerPlus && renderGroup("Admin", isOwner 
+  ? adminNav 
+  : adminNav.filter(n => n.url === "/app/settings" || n.url === "/app/staff")
+)}
+// STAFF sees nothing in Admin → hide the whole group if not isManagerPlus
 ```
 
-**NEW Section 4 — Overdue detection:**
-```typescript
-// ─── 4) Process Overdue Inventory Schedules ───
-const { data: schedules } = await supabase
-  .from("reminders")
-  .select("*, restaurants(name)")
-  .eq("is_enabled", true)
-  .not("inventory_list_id", "is", null)
-  .not("lock_after_hours", "is", null);
+Actually the fix is simpler: `isManagerPlus` being false already hides the Admin section for STAFF, but the current code shows `/app/settings` even for managers who aren't owners. Alert Settings and Reminders should be MANAGER+ not owner-only. Fix the filter:
 
-for (const schedule of schedules || []) {
-  const lockAfterHours = schedule.lock_after_hours;
-  const cutoffTime = new Date(now.getTime() - lockAfterHours * 60 * 60 * 1000);
-
-  const { data: overdueSessions } = await supabase
-    .from("inventory_sessions")
-    .select("id, name, created_at")
-    .eq("restaurant_id", schedule.restaurant_id)
-    .eq("inventory_list_id", schedule.inventory_list_id)
-    .eq("status", "IN_PROGRESS")
-    .lt("created_at", cutoffTime.toISOString());
-
-  for (const session of overdueSessions || []) {
-    // Check if already sent overdue notification for this session
-    const { data: existing } = await supabase
-      .from("notifications")
-      .select("id")
-      .eq("restaurant_id", schedule.restaurant_id)
-      .eq("type", "SCHEDULE_OVERDUE")
-      .contains("data", { session_id: session.id })
-      .limit(1);
-    if (existing?.length) continue;
-
-    // Notify managers
-    const managerIds = await resolveRecipients(supabase, schedule.restaurant_id, "OWNERS_MANAGERS", []);
-    for (const userId of managerIds) {
-      await supabase.from("notifications").insert({
-        restaurant_id: schedule.restaurant_id,
-        user_id: userId,
-        type: "SCHEDULE_OVERDUE",
-        title: "Inventory overdue",
-        message: `${session.name} has been in progress for over ${lockAfterHours} hours`,
-        severity: "WARNING",
-        data: { session_id: session.id, reminder_id: schedule.id },
-      });
-    }
-    results.push(`Sent overdue notification for session: ${session.name}`);
-  }
-}
+```tsx
+{isManagerPlus && renderGroup("Admin", adminNav.filter(n => {
+  if (n.url === "/app/staff") return isOwner;
+  return true; // Settings, Alert Settings, Reminders visible to all managers
+}))}
 ```
 
----
+### Fix 6 — `PARManagement.tsx` — Reset stale state on restaurant change
 
-## File Summary
+In the first `useEffect` that watches `currentRestaurant`:
 
-| File | Type | What Changes |
-|---|---|---|
-| DB migration | SQL | Add 4 columns to `reminders` |
-| `src/pages/app/settings/InventorySchedule.tsx` | **New** | Full schedule management page with card UI and create/edit dialog |
-| `src/pages/app/Settings.tsx` | Modified | Add "Inventory Schedule" nav item (manager-only) + render section |
-| `src/pages/app/inventory/EnterInventory.tsx` | Modified | Add `fetchSchedules`, `computeNextOccurrence`, `nextSchedule` useMemo, countdown panel above Today's Count section |
-| `supabase/functions/process-notifications/index.ts` | Modified | Extend Section 2 (auto-create session + lead-time reminder) + add Section 4 (overdue detection) |
-
-**No new routes. No sidebar changes. No new auth providers. All existing RLS policies remain unchanged.**
-
----
-
-## Recurrence Storage Convention
-
-Weekly schedules use day codes: `["MON"]`, `["FRI"]`
-Twice Weekly: `["MON", "THU"]`
-Monthly: `["MONTHLY_15"]` — the Edge Function and `computeNextOccurrence` both parse this prefix
-
-This keeps all recurrence data inside the existing `days_of_week jsonb` column without any schema additions beyond the 4 already listed.
-
----
-
-## UI Design for the New Settings Section
-
-The `InventoryScheduleSection` renders inside the existing Settings right panel, consistent with every other section:
-
-**Empty state:**
+```tsx
+useEffect(() => {
+  if (!currentRestaurant) return;
+  // Reset all derived state first
+  setSelectedList("");
+  setSelectedGuide(null);
+  setGuides([]);
+  setItems([]);
+  setFilterCategory("all");
+  setSearch("");
+  setLoading(true);
+  supabase.from("inventory_lists").select("*")
+    .eq("restaurant_id", currentRestaurant.id)
+    .then(({ data }) => { if (data) setLists(data); setLoading(false); });
+}, [currentRestaurant]);
 ```
-[CalendarClock icon]
-No inventory schedules
-Create a schedule to automate recurring inventory counts for your team.
-[Create Schedule button]
-```
-
-**Populated state — cards grid (2-col on desktop, 1-col mobile):**
-```
-┌─────────────────────────────────────────────────┐
-│  Weekly Count – Main Kitchen        [Active]     │
-│  Main Kitchen List · Downtown                   │
-│  MON  WED  FRI  ·  9:00 PM Eastern             │
-│  Auto-session: ON  ·  Remind 1 hr before        │
-│                        [Edit] [Pause] [Delete]   │
-└─────────────────────────────────────────────────┘
-```
-
-**Dialog — responsive max-w-lg, clean form groups:**
-- Section 1: Name + List + Location
-- Section 2: Recurrence (type toggle + day chips/month input)
-- Section 3: Time + Timezone
-- Section 4: Recipients
-- Section 5: Automation toggles (auto-session switch, lead time select, lock hours input)
