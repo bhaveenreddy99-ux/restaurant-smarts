@@ -84,33 +84,33 @@ export default function SmartOrderPage() {
     }
   };
 
-  const handleDeleteRun = async () => {
-    if (!deleteRunId) return;
-    const idToDelete = deleteRunId;
+  const handleDeleteRun = async (idToDelete: string) => {
+    if (!idToDelete) return;
 
-    // Optimistic update — remove from UI immediately
-    setRuns(prev => prev.filter(r => r.id !== idToDelete));
+    // Close dialog + optimistic UI update immediately
     setDeleteRunId(null);
+    setRuns(prev => prev.filter(r => r.id !== idToDelete));
     if (selectedRun?.id === idToDelete) { setSelectedRun(null); setRunItems([]); }
 
     // Delete child items first (FK safety)
-    await supabase.from("smart_order_run_items").delete().eq("run_id", idToDelete);
-
-    // Delete linked purchase history
-    const { data: purchases } = await supabase.from("purchase_history").select("id").eq("smart_order_run_id", idToDelete);
-    if (purchases && purchases.length > 0) {
-      await supabase.from("purchase_history_items").delete().in("purchase_history_id", purchases.map(p => p.id));
-      await supabase.from("purchase_history").delete().in("id", purchases.map(p => p.id));
+    const [, purchases] = await Promise.all([
+      supabase.from("smart_order_run_items").delete().eq("run_id", idToDelete),
+      supabase.from("purchase_history").select("id").eq("smart_order_run_id", idToDelete),
+    ]);
+    if (purchases.data && purchases.data.length > 0) {
+      const phIds = purchases.data.map(p => p.id);
+      await supabase.from("purchase_history_items").delete().in("purchase_history_id", phIds);
+      await supabase.from("purchase_history").delete().in("id", phIds);
     }
 
     const { error } = await supabase.from("smart_order_runs").delete().eq("id", idToDelete);
     if (error) {
       toast.error(`Delete failed: ${error.message}`);
-      // Roll back optimistic update
+      // Roll back — refetch from DB to restore actual state
       fetchRuns();
     } else {
       toast.success("Smart order deleted");
-      // Confirm the deletion from DB
+      // Silently confirm from DB (don't show loading)
       fetchRuns();
     }
   };
@@ -315,7 +315,10 @@ export default function SmartOrderPage() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDeleteRun} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
+            <AlertDialogAction
+              onClick={() => deleteRunId && handleDeleteRun(deleteRunId)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >Delete</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
