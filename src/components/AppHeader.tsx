@@ -5,6 +5,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,7 +13,8 @@ import {
   DropdownMenuTrigger,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import { Building2, MapPin, Bell, ChevronsUpDown, Check } from "lucide-react";
+import { Building2, MapPin, Bell, ChevronsUpDown, Check, Search, BarChart3 } from "lucide-react";
+import { useState, useMemo } from "react";
 
 const routeNames: Record<string, string> = {
   "/app/dashboard": "Dashboard",
@@ -37,10 +39,21 @@ export function AppHeader() {
   const { unreadCount } = useNotifications();
   const location = useLocation();
   const navigate = useNavigate();
+  const [restaurantSearch, setRestaurantSearch] = useState("");
 
   const pageName = routeNames[location.pathname] ||
     (location.pathname.startsWith("/app/inventory/import") ? "Import" :
      location.pathname.startsWith("/app/settings") ? "Settings" : "");
+
+  // Filter restaurants for search
+  const filteredRestaurants = useMemo(() => {
+    if (!restaurantSearch.trim()) return restaurants;
+    const q = restaurantSearch.toLowerCase();
+    return restaurants.filter(r => r.name.toLowerCase().includes(q));
+  }, [restaurants, restaurantSearch]);
+
+  // Can user switch to "All Restaurants" — only OWNER or MANAGER
+  const canPortfolio = restaurants.some(r => r.role === "OWNER" || r.role === "MANAGER");
 
   return (
     <header className="flex h-12 items-center gap-2 border-b border-border/60 px-4 bg-background/80 backdrop-blur-sm sticky top-0 z-10">
@@ -49,38 +62,84 @@ export function AppHeader() {
       <span className="text-sm font-medium text-foreground">{pageName}</span>
       <div className="flex-1" />
 
-      {/* Restaurant Switcher */}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="sm" className="gap-1.5 text-xs h-8 px-2.5">
-            <Building2 className="h-3.5 w-3.5 opacity-60" />
-            <span className="truncate max-w-[120px]">
-              {isPortfolioMode ? "All Restaurants" : currentRestaurant?.name || "Select"}
-            </span>
-            <ChevronsUpDown className="h-3 w-3 opacity-40" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-56">
-          <DropdownMenuItem
-            onClick={() => setCurrentRestaurant(null)}
-            className={isPortfolioMode ? "bg-accent" : ""}
-          >
-            <span className="font-medium">All Restaurants</span>
-            {isPortfolioMode && <Check className="h-3.5 w-3.5 ml-auto" />}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          {restaurants.map((r) => (
-            <DropdownMenuItem
-              key={r.id}
-              onClick={() => setCurrentRestaurant(r)}
-              className={r.id === currentRestaurant?.id ? "bg-accent" : ""}
-            >
-              {r.name}
-              <span className="ml-auto text-[10px] text-muted-foreground font-medium">{r.role}</span>
-            </DropdownMenuItem>
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      {/* Restaurant Switcher — only shown if user has multiple restaurants */}
+      {restaurants.length > 1 && (
+        <DropdownMenu onOpenChange={(open) => { if (!open) setRestaurantSearch(""); }}>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="sm" className="gap-1.5 text-xs h-8 px-2.5">
+              <Building2 className="h-3.5 w-3.5 opacity-60" />
+              <span className="truncate max-w-[120px]">
+                {isPortfolioMode ? "All Restaurants" : currentRestaurant?.name || "Select"}
+              </span>
+              <ChevronsUpDown className="h-3 w-3 opacity-40" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-64">
+            {/* Search — show only for 6+ restaurants */}
+            {restaurants.length >= 6 && (
+              <div className="px-2 py-1.5">
+                <div className="relative">
+                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input
+                    value={restaurantSearch}
+                    onChange={e => setRestaurantSearch(e.target.value)}
+                    placeholder="Search restaurants…"
+                    className="h-8 pl-7 text-xs"
+                    onClick={e => e.stopPropagation()}
+                    onKeyDown={e => e.stopPropagation()}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Portfolio option — only for OWNER/MANAGER */}
+            {canPortfolio && !restaurantSearch && (
+              <>
+                <DropdownMenuItem
+                  onClick={() => setCurrentRestaurant(null)}
+                  className={isPortfolioMode ? "bg-accent" : ""}
+                >
+                  <Building2 className="h-3.5 w-3.5 mr-2 opacity-60" />
+                  <span className="font-medium">All Restaurants</span>
+                  {isPortfolioMode && <Check className="h-3.5 w-3.5 ml-auto" />}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            )}
+
+            {/* Restaurant list */}
+            <div className="max-h-64 overflow-y-auto">
+              {filteredRestaurants.length === 0 ? (
+                <div className="px-2 py-3 text-xs text-muted-foreground text-center">No restaurants found</div>
+              ) : filteredRestaurants.map((r) => (
+                <DropdownMenuItem
+                  key={r.id}
+                  onClick={() => { setCurrentRestaurant(r); setRestaurantSearch(""); }}
+                  className={r.id === currentRestaurant?.id && !isPortfolioMode ? "bg-accent" : ""}
+                >
+                  {r.name}
+                  <span className="ml-auto text-[10px] text-muted-foreground font-medium">{r.role}</span>
+                  {r.id === currentRestaurant?.id && !isPortfolioMode && <Check className="h-3.5 w-3.5 ml-1" />}
+                </DropdownMenuItem>
+              ))}
+            </div>
+
+            {/* Quick link for multi-restaurant managers */}
+            {canPortfolio && !restaurantSearch && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => { setCurrentRestaurant(null); navigate("/app/reports"); }}
+                  className="text-primary text-xs"
+                >
+                  <BarChart3 className="h-3.5 w-3.5 mr-2" />
+                  Go to All-Restaurant Reports
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
 
       {/* Location Switcher */}
       {!isPortfolioMode && locations.length > 0 && (
