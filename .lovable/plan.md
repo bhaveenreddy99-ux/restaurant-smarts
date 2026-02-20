@@ -1,172 +1,177 @@
 
-# Inventory Management — Input UX + Review/Approval Enhancements
+# Review & Approved Inventory — Column Display + PAR from Guide + Table Layout
 
-## Summary of All Changes Requested
+## What the User Wants
 
-1. **Count entry input**: User can delete the `0` and start typing from a blank field (e.g. `0.1`, `0.5`, `10`)
-2. **Session cards**: Show "total cases" (sum of counts) on **Review** and **Approved** cards too — currently only In Progress shows it, but the stat is "items count" not "sum"
-3. **Review list**: Make counts editable in the Review dialog; show PAR, Pack Size, Risk, Suggested Order
-4. **Approval list (View dialog for approved sessions)**: Show Pack Size column
-5. **Smart Order**: Show Pack Size in the smart order view
+1. **Review list (Review.tsx)**: Already shows column names (Item, Category, Pack Size, Stock, PAR, Risk, Suggested Order) — but PAR values shown are `approved_par` which is fetched from `par_guides`. Need to confirm this is correctly pulling the approved PAR guide data. The `handleView` function does fetch from `par_guides` → `par_guide_items` and enriches items with `approved_par`. This is correct. The visual issue is: when the dialog has no PAR guide linked (or `approved_par` is null), it shows "—". No changes needed to Review.tsx for PAR — it already fetches from the approved PAR guide.
 
----
+2. **Approved list (Approved.tsx)**: 
+   - Currently shows: Item, Category, Stock, PAR (from `item.par_level` in session items), Unit Cost — **missing Pack Size, Risk, Suggested Order**
+   - PAR is reading from `item.par_level` (stored when session was created) — user wants it from the **approved PAR guide** (par_guides → par_guide_items), just like Review.tsx does
+   - Layout is **cards** with a popup dialog — user wants a **table** (no popup, show everything inline)
 
-## Gap Analysis Against Current Code
-
-### 1. Count Input — zero value blocks user from typing decimal
-
-**Current (line 952 — mobile card, line 1006 — desktop table):**
-```
-value={item.current_stock || ""}   // mobile
-value={item.current_stock}          // desktop
-```
-
-The desktop table uses `value={item.current_stock}` — when stock is `0` the field shows `0`, user must triple-click to select it before typing. The spec says user should be able to delete `0` and type `0.1`.
-
-**Fix:** Change both inputs to treat the value as a controlled string internally. Use `onFocus` to select all text so user can immediately overtype. Also change `onChange` to allow empty string intermediate state:
-- `value={item.current_stock == null ? "" : String(item.current_stock)}`
-- `onFocus={(e) => e.target.select()}` — this selects all on focus so any key immediately replaces the `0`
-- `onChange` parses to float, allows empty string as null/0 locally
-- `onBlur` saves the final value
-
-This is the cleanest UX: user clicks or tabs into field → `0` is selected → starts typing `0.1` → `0` gets replaced.
-
-### 2. Session card stat: "total cases" = sum of current_stock
-
-**Current (line 179):**
-```
-statsMap[row.session_id].qty++;   // counts rows, not sum of stock
-```
-And label (line 1072):
-```
-const qtyLabel = stats ? `${stats.qty} items` : null;
-```
-
-**Fix:**
-- Change aggregation to sum `current_stock`: `statsMap[row.session_id].qty += Number(row.current_stock ?? 0)`
-- Change label to: `${stats.qty % 1 === 0 ? stats.qty : stats.qty.toFixed(1)} cases`
-- This applies to **all 3 sections** automatically (the same `renderSessionCard` renders all)
-
-### 3. Review dialog: make counts editable + show PAR + Pack Size + Risk + Suggested Order
-
-**Current `Review.tsx` view dialog (lines 269-308):** read-only table with columns: Item, Category, Stock, PAR, Risk, Suggested Order. No Pack Size. Stock is not editable.
-
-**Fix in `Review.tsx`:**
-- Add **Pack Size** column header and cell
-- Make **Stock** column an editable `<Input>` that saves `current_stock` to `inventory_session_items` on blur
-- Add inline state `editedItems` that mirrors `viewItems` so edits are tracked locally and persisted
-- PAR column already exists and is read-only ✓
-
-**Fix in `EnterInventory.tsx` (Review card view dialog):** Same — the view dialog for IN_REVIEW sessions in `EnterInventory.tsx` currently shows read-only stock with no Pack Size. Apply same changes: add Pack Size column, make stock editable for IN_REVIEW sessions.
-
-### 4. Approved view dialog: add Pack Size column
-
-**Current approved view dialog (EnterInventory.tsx lines 1406-1456):**
-Columns: Item, Category, Stock, PAR, Risk, Suggested Order — **no Pack Size**.
-
-**Fix:** Add `pack_size` column between Category and Stock.
-
-### 5. Smart Order view
-
-The Smart Order page (`/app/smart-order`) is a separate file. Pack Size already exists in `smart_order_run_items.pack_size`. Need to check SmartOrder.tsx to confirm column is shown.
+3. **Approved list layout change**: Replace the card list + popup dialog with a single expandable table. Each session becomes a collapsible section: header row showing session name, list name, date — expanded rows showing items inline.
 
 ---
 
-## Files to Modify
+## Gap Analysis
 
-### `src/pages/app/inventory/EnterInventory.tsx`
+### Approved.tsx — Current State
 
-**Change A — `fetchSessions` line 179:**
-Sum stock instead of counting rows:
+**Session list:** Cards with "View" button → opens dialog
 ```
-statsMap[row.session_id].qty += Number(row.current_stock ?? 0);
-```
-
-**Change B — `renderSessionCard` line 1072:**
-```
-const qtyLabel = stats && stats.qty > 0
-  ? `${stats.qty % 1 === 0 ? stats.qty : stats.qty.toFixed(1)} cases`
-  : null;
+sessions.map(s => <Card> ... <Button onClick={() => handleView(s)}>View</Button> </Card>)
 ```
 
-**Change C — Mobile card input (line 952):**
-```
-value={item.current_stock == null ? "" : item.current_stock === 0 ? "0" : String(item.current_stock)}
-onFocus={(e) => e.target.select()}
-onChange={(e) => {
-  const val = e.target.value;
-  handleUpdateStock(item.id, val === "" ? 0 : parseFloat(val) || 0);
-}}
-```
+**View dialog table columns:** Item | Category | Stock | PAR | Unit Cost
 
-**Change D — Desktop table input (line 1006):**
-Same treatment as mobile:
-```
-value={item.current_stock == null ? "" : String(item.current_stock)}
-onFocus={(e) => e.target.select()}
-```
+**PAR source:** `item.par_level` — this is stored in `inventory_session_items.par_level` at session creation time. It does NOT fetch from `par_guides`. If the PAR guide was updated after the session was created, the displayed PAR would be stale.
 
-**Change E — Approved view dialog (around line 1410):**
-Add Pack Size column header after Category:
-```
-<TableHead className="text-xs font-semibold">Pack Size</TableHead>
-```
-And cell after Category cell:
-```
-<TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
-```
+### What Needs to Change in Approved.tsx
 
-**Change F — Review view dialog (in EnterInventory.tsx, for IN_REVIEW sessions):**
-The view dialog at lines 1406-1456 only shows full risk/PAR columns for APPROVED sessions. For IN_REVIEW, it just shows Item, Category, Stock. We need to:
-- Show PAR (read-only) for IN_REVIEW sessions too
-- Make stock editable for IN_REVIEW sessions
-- Add Pack Size for both
-
-### `src/pages/app/inventory/Review.tsx`
-
-**Change G — Add `editedItems` state:**
-```
-const [editedItems, setEditedItems] = useState<Record<string, number>>({});
-```
-
-**Change H — `handleView` (already exists) — no change needed.**
-
-**Change I — View dialog table:**
-- Add Pack Size column
-- Make Stock an editable Input for IN_REVIEW sessions
-- Save on blur via `supabase.from("inventory_session_items").update({ current_stock: val }).eq("id", item.id)`
-- PAR column already exists ✓
-- Risk + Suggested Order already exist ✓
+1. **Fetch PAR guide data** in `handleView` (same as Review.tsx does) — enrich items with `approved_par` from the latest `par_guide_items` for that list
+2. **Add columns**: Pack Size, Risk, Suggested Order (using `approved_par` for the calculation)
+3. **Change layout from cards+dialog to inline table**: Each session shows as a collapsible section or accordion with its items listed beneath, so the user sees name + list + date + time, and items expand below without a modal popup
 
 ---
 
-## SmartOrder.tsx — Quick Check Needed
+## Detailed Implementation Plan
 
-Let me also check SmartOrder.tsx to confirm Pack Size visibility.
+### File 1: `src/pages/app/inventory/Approved.tsx`
+
+#### Change 1 — Add state for expanded sessions and loaded items
+
+Replace `viewItems` / `viewSession` dialog state with an expandable inline table:
+
+```typescript
+const [expandedSession, setExpandedSession] = useState<string | null>(null);
+const [sessionItems, setSessionItems] = useState<Record<string, any[]>>({});
+```
+
+#### Change 2 — Fetch PAR data when expanding a session
+
+Add a `getRisk` helper (same as in Review.tsx) and a `loadSessionItems` function that:
+1. Fetches `inventory_session_items` for the session
+2. Fetches `par_guides` for the list → gets `par_guide_items`
+3. Enriches items with `approved_par`
+4. Stores in `sessionItems[session.id]`
+
+```typescript
+const loadSessionItems = async (session: any) => {
+  if (sessionItems[session.id]) {
+    // Already loaded — just toggle
+    setExpandedSession(prev => prev === session.id ? null : session.id);
+    return;
+  }
+  
+  const { data: items } = await supabase
+    .from("inventory_session_items")
+    .select("*")
+    .eq("session_id", session.id);
+  
+  // Fetch PAR from guide
+  const { data: guide } = await supabase
+    .from("par_guides")
+    .select("id")
+    .eq("restaurant_id", currentRestaurant.id)
+    .eq("inventory_list_id", session.inventory_list_id)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .single();
+  
+  const parMap: Record<string, number> = {};
+  if (guide) {
+    const { data: parItems } = await supabase
+      .from("par_guide_items")
+      .select("item_name, par_level")
+      .eq("par_guide_id", guide.id);
+    (parItems || []).forEach(p => { parMap[p.item_name] = Number(p.par_level); });
+  }
+  
+  const enriched = (items || []).map(item => ({
+    ...item,
+    approved_par: parMap[item.item_name] ?? Number(item.par_level) ?? null,
+  }));
+  
+  setSessionItems(prev => ({ ...prev, [session.id]: enriched }));
+  setExpandedSession(session.id);
+};
+```
+
+#### Change 3 — Replace cards+dialog with table layout
+
+Remove the card grid and dialog entirely. Replace with a single bordered table where:
+- Each **session** is a clickable header row (spanning all columns) showing: session name, list name, date/time, approved badge, item count, and an expand arrow
+- When a session is **expanded**, its items appear as child rows directly below the header row
+
+Layout:
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Session Name        List Name     Feb 20, 2026  10:32 AM  ▼   │
+├─────────────────────────────────────────────────────────────────┤
+│  Item │ Category │ Pack Size │ Stock │ PAR │ Risk │ Suggested   │
+│  ...  │ ...      │ ...       │ ...   │ ... │ ...  │ ...         │
+├─────────────────────────────────────────────────────────────────┤
+│  Session Name 2     List Name 2    Feb 19, 2026  2:15 PM   ►   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+The ExportButtons stay but move to the session header row.
+
+#### Change 4 — Add Risk column and Suggested Order column
+
+Using the same `getRisk` helper from Review.tsx:
+```typescript
+function getRisk(currentStock: number, parLevel: number | null): RiskResult {
+  if (!parLevel || parLevel <= 0) return { label: "No PAR", bgClass: "bg-muted/60", textClass: "text-muted-foreground" };
+  const ratio = currentStock / parLevel;
+  if (ratio >= 1.0) return { label: "Low", bgClass: "bg-success/10", textClass: "text-success" };
+  if (ratio > 0.5) return { label: "Medium", bgClass: "bg-warning/10", textClass: "text-warning" };
+  return { label: "High", bgClass: "bg-destructive/10", textClass: "text-destructive" };
+}
+```
+
+Suggested Order = `Math.max(0, approved_par - current_stock)`
+
+#### Column layout for item rows
+
+| Column | Source |
+|---|---|
+| Item | `item.item_name` |
+| Category | `item.category` |
+| Pack Size | `item.pack_size` |
+| Stock | `item.current_stock` |
+| PAR | `item.approved_par` (from par_guide_items) |
+| Risk | computed from stock/PAR |
+| Suggested Order | `max(0, PAR - stock)` |
+| Unit Cost | `item.unit_cost` |
+
+#### Change 5 — Date + Time display
+
+Show both date AND time for the approved_at timestamp:
+```
+{new Date(s.approved_at).toLocaleDateString()} at {new Date(s.approved_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+```
 
 ---
 
-## Detailed Technical Approach for Editable Stock in Review
+## Files Changed
 
-The Review dialog already loads `viewItems` from the DB. To make stock editable:
+| File | Change |
+|---|---|
+| `src/pages/app/inventory/Approved.tsx` | Complete redesign: remove cards+dialog, replace with expandable table; add PAR from guide fetch; add Pack Size, Risk, Suggested Order columns; show date + time |
 
-1. Add a `localItems` state that starts as a copy of `viewItems` when the dialog opens
-2. On input change, update `localItems` in memory
-3. On `onBlur`, call `supabase.from("inventory_session_items").update({ current_stock: newVal }).eq("id", item.id)`
-4. Recompute risk and suggested order dynamically from `localItems`
-
-This keeps the dialog "live" — manager can adjust a count, see risk color update immediately, then approve.
+No changes to `Review.tsx` — it already correctly fetches PAR from `par_guides` and shows all columns.
+No changes to `SmartOrder.tsx` — Pack Size column already exists there (confirmed in the code).
+No database migrations needed.
 
 ---
 
-## Summary Table
+## What Review.tsx Already Has (No Changes)
 
-| Change | File | Lines Affected |
-|---|---|---|
-| Sum stock instead of row count for "cases" stat | EnterInventory.tsx | 179, 1072 |
-| Input select-all on focus (mobile + desktop) | EnterInventory.tsx | 952, 1006 |
-| Add Pack Size to approved view dialog | EnterInventory.tsx | ~1409 |
-| Make stock editable + add Pack Size in review view | EnterInventory.tsx | ~1406-1456 |
-| Make stock editable + add Pack Size in Review.tsx dialog | Review.tsx | 269-308 |
+- Column names: Item, Category, Pack Size, Stock, PAR, Risk, Suggested Order ✓
+- PAR from `par_guide_items` via `handleView` fetching from `par_guides` ✓
+- Editable Stock input ✓
+- Risk color rows ✓
 
-No database changes. No new tables. No schema migrations.
+The only remaining issue in Review.tsx is that `localItems` state is reset incorrectly — the `setLocalItems({})` is called in `handleView` but only when there's no PAR data (the early return path skips it). This is a minor bug — adding `setLocalItems({})` before the early return in the PAR-found path will fix it. This will be included.
