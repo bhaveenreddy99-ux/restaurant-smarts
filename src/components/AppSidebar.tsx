@@ -14,6 +14,7 @@ import {
   Bell,
   AlertTriangle as AlertIcon,
   Clock,
+  TrendingUp,
 } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { NavLink } from "@/components/NavLink";
@@ -50,6 +51,7 @@ const operationsNav = [
 const insightsNav = [
   { title: "Reports", url: "/app/reports", icon: BarChart3 },
   { title: "PAR Management", url: "/app/par", icon: BookOpen },
+  { title: "PAR Suggestions", url: "/app/par/suggestions", icon: TrendingUp },
 ];
 
 const notificationsNav = [
