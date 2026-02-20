@@ -67,6 +67,7 @@ interface IssueItem {
   unit: string | null;
   pack_size: string | null;
   vendor_sku: string | null;
+  vendor_name: string | null;
   default_unit_cost: number | null;
   reasons: string[];
 }
@@ -115,6 +116,81 @@ function getAICategory(itemName: string): string {
   return "Other";
 }
 
+// ─── ISSUE ROW WITH INLINE QUICK FIX ────────────
+function IssueRow({ item, onFix, onQuickSave }: {
+  item: IssueItem;
+  onFix: (item: IssueItem) => void;
+  onQuickSave: (id: string, updates: Record<string, any>) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [vendorSku, setVendorSku] = useState(item.vendor_sku || "");
+  const [vendorName, setVendorName] = useState(item.vendor_name || "");
+  const [unitCost, setUnitCost] = useState(item.default_unit_cost != null ? String(item.default_unit_cost) : "");
+
+  if (editing) {
+    return (
+      <TableRow>
+        <TableCell className="font-medium text-sm">{item.item_name}</TableCell>
+        <TableCell>
+          <div className="flex flex-wrap gap-1">
+            {item.reasons.map(r => (
+              <Badge key={r} variant={r.includes("Duplicate") ? "destructive" : "secondary"} className="text-[10px]">{r}</Badge>
+            ))}
+          </div>
+        </TableCell>
+        <TableCell><Input className="h-7 text-xs w-24" value={vendorSku} onChange={e => setVendorSku(e.target.value)} placeholder="Product #" /></TableCell>
+        <TableCell><Input className="h-7 text-xs w-24" value={vendorName} onChange={e => setVendorName(e.target.value)} placeholder="Vendor" /></TableCell>
+        <TableCell className="text-xs">{item.unit || <span className="text-destructive">Missing</span>}</TableCell>
+        <TableCell className="text-xs">{item.pack_size || <span className="text-destructive">Missing</span>}</TableCell>
+        <TableCell>
+          <div className="flex gap-1">
+            <Button size="sm" variant="default" className="h-7 text-xs px-2 bg-gradient-amber" onClick={async () => {
+              const updates: Record<string, any> = {};
+              if (vendorSku) updates.vendor_sku = vendorSku;
+              if (vendorName) updates.vendor_name = vendorName;
+              if (unitCost) updates.default_unit_cost = parseFloat(unitCost) || null;
+              if (Object.keys(updates).length > 0) await onQuickSave(item.id, updates);
+              setEditing(false);
+            }}>
+              <Check className="h-3 w-3" />
+            </Button>
+            <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setEditing(false)}>
+              <X className="h-3 w-3" />
+            </Button>
+          </div>
+        </TableCell>
+      </TableRow>
+    );
+  }
+
+  return (
+    <TableRow>
+      <TableCell className="font-medium text-sm">{item.item_name}</TableCell>
+      <TableCell>
+        <div className="flex flex-wrap gap-1">
+          {item.reasons.map(r => (
+            <Badge key={r} variant={r.includes("Duplicate") ? "destructive" : "secondary"} className="text-[10px]">{r}</Badge>
+          ))}
+        </div>
+      </TableCell>
+      <TableCell className="text-xs">{item.vendor_sku || <span className="text-destructive">Missing</span>}</TableCell>
+      <TableCell className="text-xs">{item.vendor_name || <span className="text-destructive">Missing</span>}</TableCell>
+      <TableCell className="text-xs">{item.unit || <span className="text-destructive">Missing</span>}</TableCell>
+      <TableCell className="text-xs">{item.pack_size || <span className="text-destructive">Missing</span>}</TableCell>
+      <TableCell>
+        <div className="flex gap-1">
+          <Button size="sm" variant="outline" className="h-7 text-xs px-2" onClick={() => setEditing(true)}>
+            <Pencil className="h-3 w-3 mr-1" /> Quick Fix
+          </Button>
+          <Button size="sm" variant="ghost" className="h-7 text-xs px-2" onClick={() => onFix(item)}>
+            Full Edit
+          </Button>
+        </div>
+      </TableCell>
+    </TableRow>
+  );
+}
+
 // ─── COMPONENT ──────────────────────────────────
 export default function ListManagementPage() {
   const { currentRestaurant } = useRestaurant();
@@ -160,7 +236,7 @@ export default function ListManagementPage() {
 
   // ── Add item
   const [addItemOpen, setAddItemOpen] = useState(false);
-  const [newItem, setNewItem] = useState({ item_name: "", category: "", unit: "", pack_size: "", vendor_sku: "", default_unit_cost: 0 });
+  const [newItem, setNewItem] = useState({ item_name: "", category: "", unit: "", pack_size: "", vendor_sku: "", vendor_name: "", default_unit_cost: 0 });
 
   // ── Rename/Delete
   const [renameOpen, setRenameOpen] = useState(false);
@@ -451,6 +527,9 @@ export default function ListManagementPage() {
       const reasons: string[] = [];
       if (!item.unit) reasons.push("Missing Unit");
       if (!item.pack_size) reasons.push("Missing Pack Size");
+      if (!item.vendor_sku) reasons.push("Missing Product Number");
+      if (!item.vendor_name) reasons.push("Missing Vendor Name");
+      if (item.default_unit_cost == null) reasons.push("Missing Unit Cost");
       const norm = item.item_name.trim().toLowerCase();
       if (nameMap[norm] > 1) reasons.push("Duplicate Item Name");
       if (reasons.length > 0) {
@@ -472,13 +551,14 @@ export default function ListManagementPage() {
       unit: newItem.unit || null,
       pack_size: newItem.pack_size || null,
       vendor_sku: newItem.vendor_sku || null,
+      vendor_name: newItem.vendor_name || null,
       default_unit_cost: newItem.default_unit_cost || null,
       sort_order: maxOrder,
     });
     if (error) toast.error(error.message);
     else {
       toast.success("Item added");
-      setNewItem({ item_name: "", category: "", unit: "", pack_size: "", vendor_sku: "", default_unit_cost: 0 });
+      setNewItem({ item_name: "", category: "", unit: "", pack_size: "", vendor_sku: "", vendor_name: "", default_unit_cost: 0 });
       setAddItemOpen(false);
       openListDetail(selectedList);
     }
@@ -1267,9 +1347,12 @@ export default function ListManagementPage() {
                           </SelectContent>
                         </Select>
                       </div>
-                      <div className="space-y-1"><Label className="text-xs">Vendor SKU</Label><Input value={newItem.vendor_sku} onChange={e => setNewItem({ ...newItem, vendor_sku: e.target.value })} /></div>
+                      <div className="space-y-1"><Label className="text-xs">Product Number</Label><Input value={newItem.vendor_sku} onChange={e => setNewItem({ ...newItem, vendor_sku: e.target.value })} placeholder="Vendor item number used for ordering" /></div>
                     </div>
-                    <div className="space-y-1"><Label className="text-xs">Unit Cost</Label><Input type="number" step="0.01" value={newItem.default_unit_cost || ""} onChange={e => setNewItem({ ...newItem, default_unit_cost: parseFloat(e.target.value) || 0 })} /></div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1"><Label className="text-xs">Vendor Name</Label><Input value={newItem.vendor_name} onChange={e => setNewItem({ ...newItem, vendor_name: e.target.value })} placeholder="e.g. Sysco, US Foods" /></div>
+                      <div className="space-y-1"><Label className="text-xs">Unit Cost</Label><Input type="number" step="0.01" value={newItem.default_unit_cost || ""} onChange={e => setNewItem({ ...newItem, default_unit_cost: parseFloat(e.target.value) || 0 })} /></div>
+                    </div>
                     <Button onClick={handleAddItemToList} className="w-full bg-gradient-amber" disabled={!newItem.item_name || !newItem.unit || !newItem.pack_size}>Add Item</Button>
                   </div>
                 </DialogContent>
@@ -1379,7 +1462,7 @@ export default function ListManagementPage() {
                             <TableHead className="text-xs font-semibold">Item Name</TableHead>
                             <TableHead className="text-xs font-semibold">Unit</TableHead>
                             <TableHead className="text-xs font-semibold">Pack Size</TableHead>
-                            <TableHead className="text-xs font-semibold">Vendor SKU</TableHead>
+                            <TableHead className="text-xs font-semibold">Product #</TableHead>
                             <TableHead className="text-xs font-semibold">Unit Cost</TableHead>
                             <TableHead className="text-xs font-semibold w-20">Actions</TableHead>
                           </TableRow>
@@ -1477,6 +1560,8 @@ export default function ListManagementPage() {
                     <TableRow className="bg-muted/30">
                       <TableHead className="text-xs font-semibold">Item Name</TableHead>
                       <TableHead className="text-xs font-semibold">Issues</TableHead>
+                      <TableHead className="text-xs font-semibold">Product #</TableHead>
+                      <TableHead className="text-xs font-semibold">Vendor</TableHead>
                       <TableHead className="text-xs font-semibold">Unit</TableHead>
                       <TableHead className="text-xs font-semibold">Pack Size</TableHead>
                       <TableHead className="text-xs font-semibold w-20">Action</TableHead>
@@ -1484,27 +1569,15 @@ export default function ListManagementPage() {
                   </TableHeader>
                   <TableBody>
                     {issues.map(item => (
-                      <TableRow key={item.id}>
-                        <TableCell className="font-medium text-sm">{item.item_name}</TableCell>
-                        <TableCell>
-                          <div className="flex flex-wrap gap-1">
-                            {item.reasons.map(r => (
-                              <Badge key={r} variant={r.includes("Duplicate") ? "destructive" : "secondary"} className="text-[10px]">{r}</Badge>
-                            ))}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-xs">{item.unit || <span className="text-destructive">Missing</span>}</TableCell>
-                        <TableCell className="text-xs">{item.pack_size || <span className="text-destructive">Missing</span>}</TableCell>
-                        <TableCell>
-                          <Button size="sm" variant="outline" className="h-7 text-xs px-2" onClick={() => {
-                            setEditingItem(item.id);
-                            setEditValues({ item_name: item.item_name, category: item.category, unit: item.unit, pack_size: item.pack_size, vendor_sku: item.vendor_sku, default_unit_cost: item.default_unit_cost });
-                            setActiveTab("items");
-                          }}>
-                            <Pencil className="h-3 w-3 mr-1" /> Fix
-                          </Button>
-                        </TableCell>
-                      </TableRow>
+                      <IssueRow key={item.id} item={item} onFix={(item) => {
+                        setEditingItem(item.id);
+                        setEditValues({ item_name: item.item_name, category: item.category, unit: item.unit, pack_size: item.pack_size, vendor_sku: item.vendor_sku, vendor_name: item.vendor_name, default_unit_cost: item.default_unit_cost });
+                        setActiveTab("items");
+                      }} onQuickSave={async (id, updates) => {
+                        const { error } = await supabase.from("inventory_catalog_items").update(updates).eq("id", id);
+                        if (error) toast.error(error.message);
+                        else { toast.success("Updated"); openListDetail(selectedList); }
+                      }} />
                     ))}
                   </TableBody>
                 </Table>
@@ -1622,9 +1695,11 @@ export default function ListManagementPage() {
           {importStep === "map" && (
             <div className="space-y-4">
               <p className="text-sm text-muted-foreground">Map your file columns to the required fields.</p>
-              {[...requiredMapFields, ...optionalMapFields].map(field => (
+              {[...requiredMapFields, ...optionalMapFields].map(field => {
+                const displayLabel = field === "vendor_sku" ? "Product Number" : field === "default_unit_cost" ? "Unit Cost" : field.replace(/_/g, " ");
+                return (
                 <div key={field} className="flex items-center gap-3">
-                  <Label className="w-28 text-xs capitalize">{field.replace(/_/g, " ")}{requiredMapFields.includes(field) && " *"}</Label>
+                  <Label className="w-28 text-xs capitalize">{displayLabel}{requiredMapFields.includes(field) && " *"}</Label>
                   <Select value={importMapping[field] || ""} onValueChange={v => setImportMapping(prev => ({ ...prev, [field]: v }))}>
                     <SelectTrigger className="flex-1 h-8 text-xs"><SelectValue placeholder="Select column" /></SelectTrigger>
                     <SelectContent>
@@ -1633,7 +1708,8 @@ export default function ListManagementPage() {
                   </Select>
                   {importMapping[field] && <Check className="h-4 w-4 text-success shrink-0" />}
                 </div>
-              ))}
+                );
+              })}
               <div className="flex gap-2">
                 <Button variant="outline" onClick={() => { setImportStep("upload"); }} className="flex-1">Back</Button>
                 <Button onClick={handleImportPreview} className="flex-1 bg-gradient-amber">Preview</Button>

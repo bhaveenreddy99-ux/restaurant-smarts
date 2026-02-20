@@ -40,6 +40,8 @@ interface ActionItem {
   category: string | null;
   unit: string | null;
   default_unit_cost: number | null;
+  vendor_sku: string | null;
+  vendor_name: string | null;
   inventory_list_id: string | null;
   listName?: string;
   reasons: string[];
@@ -67,7 +69,7 @@ export default function InventoryListsPage() {
   const [editingItem, setEditingItem] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<any>({});
   const [addItemOpen, setAddItemOpen] = useState(false);
-  const [newItem, setNewItem] = useState({ item_name: "", category: "", unit: "", vendor_sku: "", default_unit_cost: 0 });
+  const [newItem, setNewItem] = useState({ item_name: "", category: "", unit: "", vendor_sku: "", vendor_name: "", default_unit_cost: 0 });
 
   // Rename / delete state
   const [renameOpen, setRenameOpen] = useState(false);
@@ -90,7 +92,7 @@ export default function InventoryListsPage() {
 
       const { data: catalogAll } = await supabase
         .from("inventory_catalog_items")
-        .select("id, inventory_list_id, category, unit, default_unit_cost, item_name")
+        .select("id, inventory_list_id, category, unit, default_unit_cost, item_name, vendor_sku, vendor_name")
         .eq("restaurant_id", currentRestaurant.id);
       if (catalogAll) {
         const counts: Record<string, number> = {};
@@ -110,6 +112,8 @@ export default function InventoryListsPage() {
           const reasons: string[] = [];
           if (!i.category) reasons.push("Missing Category");
           if (!i.unit) reasons.push("Missing Unit");
+          if (!i.vendor_sku) reasons.push("Missing Product Number");
+          if (!i.vendor_name) reasons.push("Missing Vendor Name");
           if (i.default_unit_cost == null) reasons.push("Missing Unit Cost");
           const norm = i.item_name.trim().toLowerCase();
           if (nameMap[norm] > 1) reasons.push("Possible Duplicate");
@@ -257,7 +261,7 @@ export default function InventoryListsPage() {
     if (error) toast.error(error.message);
     else {
       toast.success("Item added");
-      setNewItem({ item_name: "", category: "", unit: "", vendor_sku: "", default_unit_cost: 0 });
+      setNewItem({ item_name: "", category: "", unit: "", vendor_sku: "", vendor_name: "", default_unit_cost: 0 });
       setAddItemOpen(false);
       openListDetail(selectedList);
     }
@@ -301,6 +305,8 @@ export default function InventoryListsPage() {
   // Action items by reason
   const actionByCategory = actionItems.filter(i => i.reasons.includes("Missing Category"));
   const actionByUnit = actionItems.filter(i => i.reasons.includes("Missing Unit"));
+  const actionByProductNum = actionItems.filter(i => i.reasons.includes("Missing Product Number"));
+  const actionByVendor = actionItems.filter(i => i.reasons.includes("Missing Vendor Name"));
   const actionByCost = actionItems.filter(i => i.reasons.includes("Missing Unit Cost"));
   const actionByDuplicate = actionItems.filter(i => i.reasons.includes("Possible Duplicate"));
 
@@ -330,12 +336,16 @@ export default function InventoryListsPage() {
           <TabsList className="w-full justify-start">
             <TabsTrigger value="category" className="text-xs">Missing Category ({actionByCategory.length})</TabsTrigger>
             <TabsTrigger value="unit" className="text-xs">Missing Unit ({actionByUnit.length})</TabsTrigger>
+            <TabsTrigger value="productnum" className="text-xs">Missing Product # ({actionByProductNum.length})</TabsTrigger>
+            <TabsTrigger value="vendor" className="text-xs">Missing Vendor ({actionByVendor.length})</TabsTrigger>
             <TabsTrigger value="cost" className="text-xs">Missing Cost ({actionByCost.length})</TabsTrigger>
             <TabsTrigger value="duplicate" className="text-xs">Duplicates ({actionByDuplicate.length})</TabsTrigger>
           </TabsList>
           {[
             { key: "category", items: actionByCategory },
             { key: "unit", items: actionByUnit },
+            { key: "productnum", items: actionByProductNum },
+            { key: "vendor", items: actionByVendor },
             { key: "cost", items: actionByCost },
             { key: "duplicate", items: actionByDuplicate },
           ].map(({ key, items: tabItems }) => (
@@ -446,7 +456,7 @@ export default function InventoryListsPage() {
                 <TableHead className="text-xs font-semibold">Category</TableHead>
                 <TableHead className="text-xs font-semibold">Unit</TableHead>
                 <TableHead className="text-xs font-semibold">Pack Size</TableHead>
-                <TableHead className="text-xs font-semibold">Vendor SKU</TableHead>
+                <TableHead className="text-xs font-semibold">Product #</TableHead>
                 <TableHead className="text-xs font-semibold">Unit Cost</TableHead>
                 <TableHead className="text-xs font-semibold w-16">Actions</TableHead>
               </TableRow>
@@ -512,7 +522,7 @@ export default function InventoryListsPage() {
                 <div className="space-y-1"><Label>Unit</Label><Input value={newItem.unit} onChange={e => setNewItem({ ...newItem, unit: e.target.value })} className="h-10" /></div>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1"><Label>Vendor SKU</Label><Input value={newItem.vendor_sku} onChange={e => setNewItem({ ...newItem, vendor_sku: e.target.value })} className="h-10" /></div>
+                <div className="space-y-1"><Label>Product Number</Label><Input value={newItem.vendor_sku} onChange={e => setNewItem({ ...newItem, vendor_sku: e.target.value })} className="h-10" placeholder="Vendor item number used for ordering" /></div>
                 <div className="space-y-1"><Label>Unit Cost</Label><Input type="number" value={newItem.default_unit_cost} onChange={e => setNewItem({ ...newItem, default_unit_cost: +e.target.value })} className="h-10" /></div>
               </div>
               <Button onClick={handleAddItemToList} className="w-full bg-gradient-amber">Add Item</Button>
