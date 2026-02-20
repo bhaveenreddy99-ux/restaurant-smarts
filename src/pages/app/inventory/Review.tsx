@@ -40,6 +40,84 @@ export default function ReviewPage() {
 
   useEffect(() => { fetchSessions(); }, [currentRestaurant]);
 
+  const autoCreateSmartOrder = async (sessionId: string, restaurantId: string, userId: string) => {
+    try {
+      const { data: session } = await supabase.from("inventory_sessions").select("*").eq("id", sessionId).single();
+      if (!session) return;
+      const { data: sessionItems } = await supabase.from("inventory_session_items").select("*").eq("session_id", sessionId);
+      if (!sessionItems || sessionItems.length === 0) return;
+
+      const { data: latestGuide } = await supabase.from("par_guides").select("id")
+        .eq("restaurant_id", restaurantId).eq("inventory_list_id", session.inventory_list_id)
+        .order("updated_at", { ascending: false }).limit(1).single();
+
+      const parMap: Record<string, number> = {};
+      if (latestGuide) {
+        const { data: guideItems } = await supabase.from("par_guide_items").select("item_name, par_level").eq("par_guide_id", latestGuide.id);
+        (guideItems || []).forEach(p => { parMap[p.item_name] = Number(p.par_level); });
+      }
+
+      const computed = sessionItems.map(i => {
+        const parLevel = parMap[i.item_name] ?? Number(i.par_level);
+        const currentStock = Number(i.current_stock ?? 0);
+        const ratio = parLevel > 0 ? currentStock / parLevel : null;
+        const risk = ratio === null ? "GREEN" : ratio < 0.5 ? "RED" : ratio < 1.0 ? "YELLOW" : "GREEN";
+        const suggestedOrder = parLevel > 0 ? Math.max(0, parLevel - currentStock) : 0;
+        return { ...i, parLevel, currentStock, risk, suggestedOrder };
+      });
+
+      const redCount = computed.filter(i => i.risk === "RED").length;
+      const yellowCount = computed.filter(i => i.risk === "YELLOW").length;
+
+      const { data: run, error: runError } = await supabase.from("smart_order_runs").insert({
+        restaurant_id: restaurantId,
+        session_id: sessionId,
+        inventory_list_id: session.inventory_list_id,
+        par_guide_id: latestGuide?.id || null,
+        created_by: userId,
+      }).select().single();
+      if (runError || !run) return;
+
+      const runItems = computed.map(i => ({
+        run_id: run.id,
+        item_name: i.item_name,
+        suggested_order: i.suggestedOrder,
+        risk: i.risk,
+        current_stock: i.currentStock,
+        par_level: i.parLevel,
+        unit_cost: i.unit_cost || null,
+        pack_size: i.pack_size || null,
+      }));
+      await supabase.from("smart_order_run_items").insert(runItems);
+
+      if (redCount > 0 || yellowCount > 0) {
+        const { data: prefs } = await supabase.from("notification_preferences")
+          .select("*, alert_recipients(user_id)").eq("restaurant_id", restaurantId).eq("channel_in_app", true).limit(1).single();
+        if (prefs) {
+          const { data: members } = await supabase.from("restaurant_members").select("user_id, role").eq("restaurant_id", restaurantId);
+          let targetUserIds: string[] = [];
+          if (prefs.recipients_mode === "OWNERS_MANAGERS") targetUserIds = (members || []).filter(m => m.role === "OWNER" || m.role === "MANAGER").map(m => m.user_id);
+          else if (prefs.recipients_mode === "ALL") targetUserIds = (members || []).map(m => m.user_id);
+          else if (prefs.recipients_mode === "CUSTOM") targetUserIds = (prefs.alert_recipients || []).map((r: any) => r.user_id);
+          if (targetUserIds.length > 0) {
+            const notifications = targetUserIds.map(uid => ({
+              restaurant_id: restaurantId,
+              user_id: uid,
+              type: "LOW_STOCK",
+              severity: (redCount > 0 ? "CRITICAL" : "WARNING") as "CRITICAL" | "WARNING",
+              title: `Inventory Approved — ${redCount + yellowCount} item${redCount + yellowCount > 1 ? "s" : ""} need attention`,
+              message: `${redCount} high risk, ${yellowCount} medium risk items detected`,
+              data: { session_id: sessionId, run_id: run.id, red: redCount, yellow: yellowCount } as any,
+            }));
+            await supabase.from("notifications").insert(notifications);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Auto smart order error:", err);
+    }
+  };
+
   const handleApprove = async (sessionId: string) => {
     const { error } = await supabase.from("inventory_sessions").update({
       status: "APPROVED",
@@ -47,8 +125,14 @@ export default function ReviewPage() {
       approved_by: user?.id,
       updated_at: new Date().toISOString(),
     }).eq("id", sessionId);
-    if (error) toast.error(error.message);
-    else { toast.success("Session approved!"); fetchSessions(); }
+    if (error) { toast.error(error.message); return; }
+
+    if (currentRestaurant && user) {
+      await autoCreateSmartOrder(sessionId, currentRestaurant.id, user.id);
+    }
+
+    toast.success("Session approved!");
+    fetchSessions();
   };
 
   const handleReject = async (sessionId: string) => {

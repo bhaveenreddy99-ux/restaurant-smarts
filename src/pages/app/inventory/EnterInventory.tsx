@@ -56,6 +56,7 @@ export default function EnterInventoryPage() {
   const [inProgressSessions, setInProgressSessions] = useState<any[]>([]);
   const [reviewSessions, setReviewSessions] = useState<any[]>([]);
   const [approvedSessions, setApprovedSessions] = useState<any[]>([]);
+  const [sessionStats, setSessionStats] = useState<Record<string, { qty: number; totalValue: number }>>({});
   const [approvedFilter, setApprovedFilter] = useState("30");
 
   const [activeSession, setActiveSession] = useState<any>(null);
@@ -146,29 +147,42 @@ export default function EnterInventoryPage() {
     if (!currentRestaurant) return;
     setLoading(true);
 
-    const { data: ip } = await supabase.from("inventory_sessions")
-      .select("*, inventory_lists(name)")
-      .eq("restaurant_id", currentRestaurant.id)
-      .eq("status", "IN_PROGRESS")
-      .order("updated_at", { ascending: false });
-    setInProgressSessions((ip || []).filter((s) => !selectedList || s.inventory_list_id === selectedList));
-
-    const { data: rv } = await supabase.from("inventory_sessions")
-      .select("*, inventory_lists(name)")
-      .eq("restaurant_id", currentRestaurant.id)
-      .eq("status", "IN_REVIEW")
-      .order("updated_at", { ascending: false });
-    setReviewSessions((rv || []).filter((s) => !selectedList || s.inventory_list_id === selectedList));
-
     const daysAgo = new Date();
     daysAgo.setDate(daysAgo.getDate() - parseInt(approvedFilter));
-    const { data: ap } = await supabase.from("inventory_sessions")
-      .select("*, inventory_lists(name)")
-      .eq("restaurant_id", currentRestaurant.id)
-      .eq("status", "APPROVED")
-      .gte("approved_at", daysAgo.toISOString())
-      .order("approved_at", { ascending: false });
-    setApprovedSessions((ap || []).filter((s) => !selectedList || s.inventory_list_id === selectedList));
+
+    const [{ data: ip }, { data: rv }, { data: ap }] = await Promise.all([
+      supabase.from("inventory_sessions").select("*, inventory_lists(name)").eq("restaurant_id", currentRestaurant.id).eq("status", "IN_PROGRESS").order("updated_at", { ascending: false }),
+      supabase.from("inventory_sessions").select("*, inventory_lists(name)").eq("restaurant_id", currentRestaurant.id).eq("status", "IN_REVIEW").order("updated_at", { ascending: false }),
+      supabase.from("inventory_sessions").select("*, inventory_lists(name)").eq("restaurant_id", currentRestaurant.id).eq("status", "APPROVED").gte("approved_at", daysAgo.toISOString()).order("approved_at", { ascending: false }),
+    ]);
+
+    const filteredIp = (ip || []).filter((s) => !selectedList || s.inventory_list_id === selectedList);
+    const filteredRv = (rv || []).filter((s) => !selectedList || s.inventory_list_id === selectedList);
+    const filteredAp = (ap || []).filter((s) => !selectedList || s.inventory_list_id === selectedList);
+
+    setInProgressSessions(filteredIp);
+    setReviewSessions(filteredRv);
+    setApprovedSessions(filteredAp);
+
+    // Fetch item counts + total values for all sessions
+    const allSessions = [...filteredIp, ...filteredRv, ...filteredAp];
+    if (allSessions.length > 0) {
+      const sessionIds = allSessions.map((s) => s.id);
+      const { data: statsRaw } = await supabase
+        .from("inventory_session_items")
+        .select("session_id, current_stock, unit_cost")
+        .in("session_id", sessionIds);
+
+      const statsMap: Record<string, { qty: number; totalValue: number }> = {};
+      (statsRaw || []).forEach((row) => {
+        if (!statsMap[row.session_id]) statsMap[row.session_id] = { qty: 0, totalValue: 0 };
+        statsMap[row.session_id].qty++;
+        if (row.current_stock != null && row.unit_cost != null) {
+          statsMap[row.session_id].totalValue += Number(row.current_stock) * Number(row.unit_cost);
+        }
+      });
+      setSessionStats(statsMap);
+    }
 
     setLoading(false);
   };
@@ -197,8 +211,25 @@ export default function EnterInventoryPage() {
     const { data: catItems } = await supabase.from("inventory_catalog_items").select("*")
       .eq("restaurant_id", currentRestaurant.id).eq("inventory_list_id", selectedList);
 
+    // Auto-detect latest PAR guide if none explicitly selected
+    let resolvedParItems = parItems;
+    if (resolvedParItems.length === 0 && selectedList) {
+      const { data: latestGuide } = await supabase
+        .from("par_guides")
+        .select("id")
+        .eq("restaurant_id", currentRestaurant.id)
+        .eq("inventory_list_id", selectedList)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .single();
+      if (latestGuide) {
+        const { data: latestItems } = await supabase.from("par_guide_items").select("*").eq("par_guide_id", latestGuide.id);
+        if (latestItems) resolvedParItems = latestItems;
+      }
+    }
+
     const parMap: Record<string, number> = {};
-    parItems.forEach((p) => { parMap[p.item_name] = Number(p.par_level); });
+    resolvedParItems.forEach((p) => { parMap[p.item_name] = Number(p.par_level); });
 
     if (catItems && catItems.length > 0) {
       const preItems = catItems.map((ci) => ({
@@ -214,8 +245,8 @@ export default function EnterInventoryPage() {
         vendor_name: ci.vendor_name || null
       }));
       await supabase.from("inventory_session_items").insert(preItems);
-    } else if (parItems.length > 0) {
-      const preItems = parItems.map((p) => ({
+    } else if (resolvedParItems.length > 0) {
+      const preItems = resolvedParItems.map((p) => ({
         session_id: data.id,
         item_name: p.item_name,
         category: p.category || "Dry",
@@ -235,12 +266,21 @@ export default function EnterInventoryPage() {
 
   const openEditor = async (session: any) => {
     setActiveSession(session);
-    const { data } = await supabase.from("inventory_session_items").select("*").eq("session_id", session.id);
+    const [{ data }, listResult, catalogResult] = await Promise.all([
+      supabase.from("inventory_session_items").select("*").eq("session_id", session.id),
+      supabase.from("inventory_lists").select("active_category_mode").eq("id", session.inventory_list_id).single(),
+      currentRestaurant
+        ? supabase.from("inventory_catalog_items").select("*").eq("restaurant_id", currentRestaurant.id).eq("inventory_list_id", session.inventory_list_id)
+        : Promise.resolve({ data: null }),
+    ]);
     if (data) setItems(data);
-    if (currentRestaurant) {
-      const { data: cats } = await supabase.from("inventory_catalog_items").select("*")
-        .eq("restaurant_id", currentRestaurant.id).eq("inventory_list_id", session.inventory_list_id);
-      if (cats) setCatalogItems(cats);
+    if (catalogResult.data) setCatalogItems(catalogResult.data);
+    // Sync category mode from the list's active_category_mode
+    if (listResult.data?.active_category_mode) {
+      const dbMode = listResult.data.active_category_mode;
+      if (dbMode === "ai" || dbMode === "custom-categories") setCategoryMode("custom-categories");
+      else if (dbMode === "user" || dbMode === "my-categories") setCategoryMode("my-categories");
+      else setCategoryMode("list_order");
     }
   };
 
@@ -325,24 +365,134 @@ export default function EnterInventoryPage() {
   const handleClearEntries = async () => {
     if (!clearEntriesSessionId) return;
     const { error } = await supabase.from("inventory_session_items")
-      .update({ current_stock: 0 })
+      .update({ current_stock: null } as any)
       .eq("session_id", clearEntriesSessionId);
     if (error) toast.error(error.message);
     else {
       toast.success("Entries cleared — ready for recount");
       setClearEntriesSessionId(null);
       if (activeSession?.id === clearEntriesSessionId) {
-        setItems(items.map(i => ({ ...i, current_stock: 0 })));
+        setItems(items.map(i => ({ ...i, current_stock: null })));
       }
     }
   };
 
+  // Helper: auto-create smart order run + items + notifications on approval
+  const autoCreateSmartOrder = async (sessionId: string) => {
+    if (!currentRestaurant || !user) return;
+    try {
+      // 1. Fetch session to get inventory_list_id
+      const { data: session } = await supabase.from("inventory_sessions").select("*").eq("id", sessionId).single();
+      if (!session) return;
+
+      // 2. Fetch session items
+      const { data: sessionItems } = await supabase.from("inventory_session_items").select("*").eq("session_id", sessionId);
+      if (!sessionItems || sessionItems.length === 0) return;
+
+      // 3. Fetch latest par_guide for the list
+      const { data: latestGuide } = await supabase.from("par_guides").select("id")
+        .eq("restaurant_id", currentRestaurant.id)
+        .eq("inventory_list_id", session.inventory_list_id)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .single();
+
+      const parMap: Record<string, number> = {};
+      if (latestGuide) {
+        const { data: guideItems } = await supabase.from("par_guide_items").select("item_name, par_level").eq("par_guide_id", latestGuide.id);
+        (guideItems || []).forEach(p => { parMap[p.item_name] = Number(p.par_level); });
+      }
+
+      // 4. Compute risk + suggested order per item
+      const computed = sessionItems.map(i => {
+        const parLevel = parMap[i.item_name] ?? Number(i.par_level);
+        const currentStock = Number(i.current_stock ?? 0);
+        const ratio = parLevel > 0 ? currentStock / parLevel : null;
+        const risk = ratio === null ? "GREEN" : ratio < 0.5 ? "RED" : ratio < 1.0 ? "YELLOW" : "GREEN";
+        const suggestedOrder = parLevel > 0 ? Math.max(0, parLevel - currentStock) : 0;
+        return { ...i, parLevel, currentStock, risk, suggestedOrder };
+      });
+
+      const redCount = computed.filter(i => i.risk === "RED").length;
+      const yellowCount = computed.filter(i => i.risk === "YELLOW").length;
+
+      // 5. Insert smart_order_runs
+      const { data: run, error: runError } = await supabase.from("smart_order_runs").insert({
+        restaurant_id: currentRestaurant.id,
+        session_id: sessionId,
+        inventory_list_id: session.inventory_list_id,
+        par_guide_id: latestGuide?.id || null,
+        created_by: user.id,
+      }).select().single();
+      if (runError || !run) return;
+
+      // 6. Insert smart_order_run_items
+      const runItems = computed.map(i => ({
+        run_id: run.id,
+        item_name: i.item_name,
+        suggested_order: i.suggestedOrder,
+        risk: i.risk,
+        current_stock: i.currentStock,
+        par_level: i.parLevel,
+        unit_cost: i.unit_cost || null,
+        pack_size: i.pack_size || null,
+      }));
+      await supabase.from("smart_order_run_items").insert(runItems);
+
+      // 7. Fire notifications if RED items exist
+      if (redCount > 0 || yellowCount > 0) {
+        const { data: prefs } = await supabase.from("notification_preferences")
+          .select("*, alert_recipients(user_id)")
+          .eq("restaurant_id", currentRestaurant.id)
+          .eq("channel_in_app", true)
+          .limit(1)
+          .single();
+
+        if (prefs) {
+          const { data: members } = await supabase.from("restaurant_members")
+            .select("user_id, role")
+            .eq("restaurant_id", currentRestaurant.id);
+
+          let targetUserIds: string[] = [];
+          if (prefs.recipients_mode === "OWNERS_MANAGERS") {
+            targetUserIds = (members || []).filter(m => m.role === "OWNER" || m.role === "MANAGER").map(m => m.user_id);
+          } else if (prefs.recipients_mode === "ALL") {
+            targetUserIds = (members || []).map(m => m.user_id);
+          } else if (prefs.recipients_mode === "CUSTOM") {
+            targetUserIds = (prefs.alert_recipients || []).map((r: any) => r.user_id);
+          }
+
+          if (targetUserIds.length > 0) {
+            const notifications = targetUserIds.map(uid => ({
+              restaurant_id: currentRestaurant.id,
+              user_id: uid,
+              type: "LOW_STOCK",
+              severity: redCount > 0 ? "CRITICAL" : "WARNING" as "CRITICAL" | "WARNING",
+              title: `Inventory Approved — ${redCount + yellowCount} item${redCount + yellowCount > 1 ? "s" : ""} need attention`,
+              message: `${redCount} high risk, ${yellowCount} medium risk items detected`,
+              data: { session_id: sessionId, run_id: run.id, red: redCount, yellow: yellowCount } as any,
+            }));
+            await supabase.from("notifications").insert(notifications);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Auto smart order error:", err);
+    }
+  };
+
   const handleApprove = async (sessionId: string) => {
+    if (!currentRestaurant || !user) return;
     const { error } = await supabase.from("inventory_sessions").update({
-      status: "APPROVED", approved_at: new Date().toISOString(), approved_by: user?.id, updated_at: new Date().toISOString()
+      status: "APPROVED", approved_at: new Date().toISOString(), approved_by: user.id, updated_at: new Date().toISOString()
     }).eq("id", sessionId);
-    if (error) toast.error(error.message);
-    else { toast.success("Session approved!"); fetchSessions(); }
+    if (error) { toast.error(error.message); return; }
+
+    // Auto-create smart order run + notifications
+    await autoCreateSmartOrder(sessionId);
+
+    toast.success("Session approved!");
+    fetchSessions();
   };
 
   const handleReject = async (sessionId: string) => {
@@ -918,6 +1068,10 @@ export default function EnterInventoryPage() {
 
   // ─── MAIN DASHBOARD: 3 STACKED CARDS ──────────
   const renderSessionCard = (s: any, type: "inprogress" | "review" | "approved") => {
+    const stats = sessionStats[s.id];
+    const qtyLabel = stats ? `${stats.qty} items` : null;
+    const valueLabel = stats && stats.totalValue > 0 ? `$${stats.totalValue.toFixed(2)}` : null;
+
     if (isCompact) {
       return (
         <Card key={s.id} className="border shadow-sm">
@@ -928,6 +1082,8 @@ export default function EnterInventoryPage() {
                 <p className="text-[11px] text-muted-foreground">{s.inventory_lists?.name}</p>
                 <p className="text-[10px] text-muted-foreground mt-0.5">
                   {type === "approved" && s.approved_at ? new Date(s.approved_at).toLocaleDateString() : new Date(s.updated_at).toLocaleDateString()}
+                  {qtyLabel ? ` • ${qtyLabel}` : ""}
+                  {valueLabel ? ` • ${valueLabel}` : ""}
                 </p>
               </div>
               <Badge className={`shrink-0 text-[10px] border-0 ${
@@ -989,11 +1145,13 @@ export default function EnterInventoryPage() {
     // Desktop row layout
     return (
       <div key={s.id} className="flex items-center justify-between py-3 px-4 rounded-lg border bg-muted/20">
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <p className="text-sm font-medium">{s.name}</p>
           <p className="text-[11px] text-muted-foreground">
             {s.inventory_lists?.name}
             {type === "approved" && s.approved_at ? ` • ${new Date(s.approved_at).toLocaleDateString()}` : ` • ${new Date(s.updated_at).toLocaleDateString()}`}
+            {qtyLabel ? ` • ${qtyLabel}` : ""}
+            {valueLabel ? ` • ${valueLabel}` : ""}
           </p>
         </div>
         <Badge className={`text-[10px] border-0 ${
