@@ -335,6 +335,30 @@ Deno.serve(async (req) => {
           }
         }
       }
+
+      // ─── Auto-create session if this is an inventory schedule ───
+      if ((reminder as any).inventory_list_id && (reminder as any).auto_create_session) {
+        const todayStart = new Date();
+        todayStart.setUTCHours(0, 0, 0, 0);
+        const { data: existingSession } = await supabase
+          .from("inventory_sessions")
+          .select("id")
+          .eq("restaurant_id", reminder.restaurant_id)
+          .eq("inventory_list_id", (reminder as any).inventory_list_id)
+          .gte("created_at", todayStart.toISOString())
+          .limit(1);
+        if (!existingSession?.length) {
+          const dateStr = now.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+          await supabase.from("inventory_sessions").insert({
+            restaurant_id: reminder.restaurant_id,
+            inventory_list_id: (reminder as any).inventory_list_id,
+            location_id: reminder.location_id || null,
+            name: `${reminder.name} – ${dateStr}`,
+            status: "IN_PROGRESS",
+          });
+          results.push(`Auto-created session: ${reminder.name} – ${dateStr}`);
+        }
+      }
     }
 
     // ─── 3) Process Daily Digests ───
@@ -390,6 +414,50 @@ Deno.serve(async (req) => {
           await supabase.from("notifications").update({ emailed_at: now.toISOString() }).eq("id", id);
         }
         results.push(`Sent digest to ${profile.email}`);
+      }
+    }
+
+    // ─── 4) Process Overdue Inventory Schedules ───
+    const { data: overdueSchedules } = await supabase
+      .from("reminders")
+      .select("*, restaurants(name)")
+      .eq("is_enabled", true)
+      .not("inventory_list_id", "is", null)
+      .not("lock_after_hours", "is", null);
+
+    for (const schedule of overdueSchedules || []) {
+      const lockAfterHours = (schedule as any).lock_after_hours;
+      const cutoffTime = new Date(now.getTime() - lockAfterHours * 60 * 60 * 1000);
+      const { data: overdueSessions } = await supabase
+        .from("inventory_sessions")
+        .select("id, name, created_at")
+        .eq("restaurant_id", schedule.restaurant_id)
+        .eq("inventory_list_id", (schedule as any).inventory_list_id)
+        .eq("status", "IN_PROGRESS")
+        .lt("created_at", cutoffTime.toISOString());
+
+      for (const session of overdueSessions || []) {
+        const { data: existing } = await supabase
+          .from("notifications")
+          .select("id")
+          .eq("restaurant_id", schedule.restaurant_id)
+          .eq("type", "SCHEDULE_OVERDUE")
+          .contains("data", { session_id: session.id })
+          .limit(1);
+        if (existing?.length) continue;
+        const managerIds = await resolveRecipients(supabase, schedule.restaurant_id, "OWNERS_MANAGERS", []);
+        for (const userId of managerIds) {
+          await supabase.from("notifications").insert({
+            restaurant_id: schedule.restaurant_id,
+            user_id: userId,
+            type: "SCHEDULE_OVERDUE",
+            title: "Inventory overdue",
+            message: `${session.name} has been in progress for over ${lockAfterHours} hours`,
+            severity: "WARNING",
+            data: { session_id: session.id, reminder_id: schedule.id },
+          });
+        }
+        results.push(`Sent overdue notification for session: ${session.name}`);
       }
     }
 

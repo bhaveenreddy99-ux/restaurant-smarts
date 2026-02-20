@@ -16,18 +16,20 @@ import { toast } from "sonner";
 import {
   Settings as SettingsIcon, Building2, MapPin, Package, BookOpen,
   ShoppingCart, FileUp, Users, AlertTriangle, Plus, Trash2, Star,
-  X, Check, Pencil, Power,
+  X, Check, Pencil, Power, CalendarClock,
 } from "lucide-react";
+import { InventoryScheduleSection } from "@/pages/app/settings/InventorySchedule";
 
 const NAV_ITEMS = [
-  { key: "general", label: "General", icon: Building2 },
-  { key: "locations", label: "Locations", icon: MapPin },
-  { key: "inventory", label: "Inventory", icon: Package },
-  { key: "par", label: "PAR Defaults", icon: BookOpen },
-  { key: "smartorder", label: "Smart Order Defaults", icon: ShoppingCart },
-  { key: "imports", label: "Imports & Mapping", icon: FileUp },
-  { key: "users", label: "Users & Permissions", icon: Users },
-  { key: "danger", label: "Danger Zone", icon: AlertTriangle },
+  { key: "general", label: "General", icon: Building2, managerOnly: false },
+  { key: "locations", label: "Locations", icon: MapPin, managerOnly: false },
+  { key: "inventory", label: "Inventory", icon: Package, managerOnly: false },
+  { key: "par", label: "PAR Defaults", icon: BookOpen, managerOnly: false },
+  { key: "smartorder", label: "Smart Order Defaults", icon: ShoppingCart, managerOnly: false },
+  { key: "imports", label: "Imports & Mapping", icon: FileUp, managerOnly: false },
+  { key: "users", label: "Users & Permissions", icon: Users, managerOnly: false },
+  { key: "schedule", label: "Inventory Schedule", icon: CalendarClock, managerOnly: true },
+  { key: "danger", label: "Danger Zone", icon: AlertTriangle, managerOnly: false },
 ];
 
 export default function SettingsPage() {
@@ -48,7 +50,7 @@ export default function SettingsPage() {
       <div className="flex gap-6 min-h-[600px]">
         {/* Left nav */}
         <nav className="w-52 shrink-0 space-y-1">
-          {NAV_ITEMS.map((item) => (
+          {NAV_ITEMS.filter(item => !item.managerOnly || isManager).map((item) => (
             <button
               key={item.key}
               onClick={() => setSection(item.key)}
@@ -72,6 +74,7 @@ export default function SettingsPage() {
           {section === "smartorder" && <SmartOrderSection restaurantId={currentRestaurant?.id} isManager={isManager} />}
           {section === "imports" && <ImportsSection restaurantId={currentRestaurant?.id} isManager={isManager} />}
           {section === "users" && <UsersSection restaurantId={currentRestaurant?.id} isOwner={isOwner} isManager={isManager} />}
+          {section === "schedule" && isManager && <InventoryScheduleSection restaurantId={currentRestaurant?.id} isManager={isManager} />}
           {section === "danger" && <DangerSection restaurantId={currentRestaurant?.id} isOwner={isOwner} isManager={isManager} />}
         </div>
       </div>
