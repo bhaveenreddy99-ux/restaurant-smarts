@@ -25,7 +25,7 @@ import {
   Plus, Send, Package, BookOpen, Play, ArrowLeft, Eye, CheckCircle,
   XCircle, ShoppingCart, Copy, Clock, ClipboardCheck, Trash2, ChevronRight, Eraser,
   Search, SkipForward, EyeOff, Check, ListOrdered, AlertTriangle, MoreHorizontal,
-  LayoutGrid, List as ListIcon, TrendingDown, CalendarClock } from "lucide-react";
+  LayoutGrid, List as ListIcon, TrendingDown, CalendarClock, MapPin, Filter } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useCategoryMapping } from "@/hooks/useCategoryMapping";
@@ -38,29 +38,24 @@ function getRisk(currentStock: number, parLevel: number | null | undefined): { l
     return { label: "No PAR", color: "gray", bgClass: "bg-muted/60", textClass: "text-muted-foreground", rowBg: "" };
   }
   const ratio = currentStock / parLevel;
-  if (ratio >= 1.0) return { label: "Low", color: "green", bgClass: "bg-success/10", textClass: "text-success", rowBg: "" };
-  if (ratio > 0.5) return { label: "Medium", color: "yellow", bgClass: "bg-warning/10", textClass: "text-warning", rowBg: "bg-warning/5" };
-  return { label: "High", color: "red", bgClass: "bg-destructive/10", textClass: "text-destructive", rowBg: "bg-destructive/5" };
+  if (ratio >= 1.0) return { label: "OK", color: "green", bgClass: "bg-success/10", textClass: "text-success", rowBg: "" };
+  if (ratio > 0.5) return { label: "Low", color: "yellow", bgClass: "bg-warning/10", textClass: "text-warning", rowBg: "" };
+  return { label: "Critical", color: "red", bgClass: "bg-destructive/10", textClass: "text-destructive", rowBg: "" };
 }
 
-// Progress bar helper
-const ProgressBar = ({ counted, total }: { counted: number; total: number }) => {
-  const pct = total > 0 ? Math.round((counted / total) * 100) : 0;
-  return (
-    <div>
-      <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
-        <span>{counted} / {total} counted</span>
-        <span>{pct}%</span>
-      </div>
-      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-        <div
-          className="h-full rounded-full bg-gradient-amber transition-all duration-300"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-    </div>
-  );
-};
+// Row state helper
+function getRowState(item: any): string {
+  if (item.current_stock === null || item.current_stock === undefined || item.current_stock === "") return "uncounted";
+  if (Number(item.current_stock) === 0) return "zero";
+  return "counted";
+}
+
+function getRowBgClass(item: any, risk: ReturnType<typeof getRisk>): string {
+  const state = getRowState(item);
+  if (state === "counted") return "bg-success/[0.04]";
+  if (state === "zero") return "bg-muted/20";
+  return "";
+}
 
 // ── Schedule helpers ──────────────────────────────────
 function computeNextOccurrence(schedule: any): Date | null {
@@ -112,7 +107,7 @@ function formatCountdown(nextDate: Date): string {
 }
 
 export default function EnterInventoryPage() {
-  const { currentRestaurant } = useRestaurant();
+  const { currentRestaurant, locations, currentLocation, setCurrentLocation } = useRestaurant();
   const { user } = useAuth();
   const navigate = useNavigate();
   const isCompact = useIsCompact();
@@ -161,6 +156,8 @@ export default function EnterInventoryPage() {
   const [submitConfirmOpen, setSubmitConfirmOpen] = useState(false);
   const [categoryMode, setCategoryMode] = useState<string>("list_order");
   const [viewToggle, setViewToggle] = useState<"table" | "compact">("table");
+  const [statusFilter, setStatusFilter] = useState<"all" | "uncounted" | "low" | "critical">("all");
+  const [lastEditedId, setLastEditedId] = useState<string | null>(null);
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   // Inventory schedules
@@ -406,6 +403,7 @@ export default function EnterInventoryPage() {
   const handleUpdateStock = async (id: string, stock: number) => {
     const clamped = Math.max(0, stock);
     setItems(items.map((i) => i.id === id ? { ...i, current_stock: clamped } : i));
+    setLastEditedId(id);
   };
 
   const handleUpdatePar = async (id: string, par: number) => {
@@ -731,7 +729,7 @@ export default function EnterInventoryPage() {
     }
     return closest;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schedules]); // counterTick intentionally omitted; useMemo recomputes when schedules change
+  }, [schedules]);
 
   const mappingMode = categoryMode === "list_order" ? "list_order"
     : categoryMode === "custom-categories" ? "custom-categories"
@@ -757,11 +755,29 @@ export default function EnterInventoryPage() {
     return 0;
   };
 
+  const getApprovedPar = (itemName: string): number | null => {
+    const val = approvedParMap[itemName];
+    return val !== undefined ? val : null;
+  };
+
+  // Apply status filter in addition to category/search filters
   const filteredItems = items.filter((i) => {
     const cat = getItemCategory(i);
     if (filterCategory !== "all" && cat !== filterCategory) return false;
     if (search && !i.item_name.toLowerCase().includes(search.toLowerCase())) return false;
     if (showOnlyEmpty && Number(i.current_stock) > 0) return false;
+    // Status filter
+    if (statusFilter === "uncounted" && getRowState(i) !== "uncounted") return false;
+    if (statusFilter === "low") {
+      const par = getApprovedPar(i.item_name);
+      const risk = getRisk(Number(i.current_stock ?? 0), par);
+      if (risk.label !== "Low") return false;
+    }
+    if (statusFilter === "critical") {
+      const par = getApprovedPar(i.item_name);
+      const risk = getRisk(Number(i.current_stock ?? 0), par);
+      if (risk.label !== "Critical") return false;
+    }
     return true;
   });
 
@@ -832,14 +848,28 @@ export default function EnterInventoryPage() {
     }
   };
 
-  const getApprovedPar = (itemName: string): number | null => {
-    const val = approvedParMap[itemName];
-    return val !== undefined ? val : null;
-  };
-
   // Progress for active editor
   const countedItems = items.filter(i => i.current_stock !== null && Number(i.current_stock) > 0).length;
   const totalItems = items.length;
+  const progressPct = totalItems > 0 ? Math.round((countedItems / totalItems) * 100) : 0;
+
+  // Submit summary stats
+  const submitSummary = useMemo(() => {
+    let lowCount = 0;
+    let criticalCount = 0;
+    let estimatedValue = 0;
+    items.forEach(i => {
+      const par = getApprovedPar(i.item_name);
+      const risk = getRisk(Number(i.current_stock ?? 0), par);
+      if (risk.label === "Low") lowCount++;
+      if (risk.label === "Critical") criticalCount++;
+      if (par && par > 0) {
+        const need = Math.max(0, par - Number(i.current_stock ?? 0));
+        if (need > 0 && i.unit_cost) estimatedValue += need * Number(i.unit_cost);
+      }
+    });
+    return { counted: countedItems, total: totalItems, lowCount, criticalCount, estimatedValue };
+  }, [items, approvedParMap]);
 
   if (loading && lists.length === 0) {
     return (
@@ -856,354 +886,494 @@ export default function EnterInventoryPage() {
     const useCompactLayout = isCompact || viewToggle === "compact";
 
     return (
-      <div className="space-y-0 animate-fade-in pb-24 lg:pb-0">
-        {/* Layer 1: Identity bar — sticky */}
-        <div className="sticky top-0 z-20 bg-background/95 backdrop-blur-sm border-b -mx-4 px-4 lg:-mx-0 lg:px-0">
-          {/* Breadcrumb — desktop only */}
-          <div className="hidden lg:block pt-3 pb-1">
-            <Breadcrumb>
-              <BreadcrumbList>
-                <BreadcrumbItem><BreadcrumbLink href="/app/dashboard">Home</BreadcrumbLink></BreadcrumbItem>
-                <BreadcrumbSeparator />
-                <BreadcrumbItem><BreadcrumbLink className="cursor-pointer" onClick={() => { setActiveSession(null); fetchSessions(); }}>Inventory management</BreadcrumbLink></BreadcrumbItem>
-                <BreadcrumbSeparator />
-                <BreadcrumbItem><BreadcrumbPage>{activeSession.name}</BreadcrumbPage></BreadcrumbItem>
-              </BreadcrumbList>
-            </Breadcrumb>
-          </div>
-
-          {/* Identity row */}
-          <div className="flex items-center gap-2 py-2.5">
-            <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={() => { setActiveSession(null); fetchSessions(); }}>
+      <div className="space-y-0 animate-fade-in pb-28 lg:pb-4">
+        {/* ═══ STICKY TOP CONTROL BAR ═══ */}
+        <div className="sticky top-0 z-20 bg-background/95 backdrop-blur-sm -mx-4 px-4 lg:-mx-0 lg:px-0 border-b border-border/40">
+          {/* Row 1: Identity + Location + Submit */}
+          <div className="flex items-center gap-3 py-3">
+            <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0 rounded-lg" onClick={() => { setActiveSession(null); fetchSessions(); }}>
               <ArrowLeft className="h-4 w-4" />
             </Button>
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <h1 className="text-sm lg:text-base font-bold tracking-tight truncate">{activeSession.name}</h1>
-                <Badge className="bg-warning/10 text-warning border-0 text-[10px] shrink-0">In progress</Badge>
+              <h1 className="text-base lg:text-lg font-bold tracking-tight truncate">{activeSession.name}</h1>
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="text-xs text-muted-foreground truncate">{selectedListName}</span>
+                {locations.length > 1 && currentLocation && (
+                  <Badge variant="outline" className="text-[10px] gap-1 shrink-0 font-normal">
+                    <MapPin className="h-2.5 w-2.5" />
+                    {currentLocation.name}
+                  </Badge>
+                )}
               </div>
-              <p className="text-[11px] text-muted-foreground truncate">{selectedListName} · {countedItems}/{totalItems} counted</p>
             </div>
 
-            {/* Autosave status */}
-            <div className="shrink-0 min-w-[60px] text-right">
-              {savingId && <span className="text-[10px] text-muted-foreground animate-pulse">Saving…</span>}
-              {!savingId && savedId && <span className="text-[10px] text-success flex items-center gap-0.5 justify-end"><Check className="h-3 w-3" /> Saved</span>}
+            {/* Save status */}
+            <div className="shrink-0 min-w-[50px] text-right hidden lg:block">
+              {savingId && <span className="text-xs text-muted-foreground animate-pulse">Saving…</span>}
+              {!savingId && savedId && <span className="text-xs text-success flex items-center gap-1 justify-end"><Check className="h-3.5 w-3.5" /> Saved</span>}
             </div>
 
-            {/* Submit button — always visible on desktop */}
-            <div className="hidden lg:flex items-center gap-2 shrink-0">
-              <Button onClick={handleSubmitForReview} className="bg-gradient-amber shadow-amber gap-2 h-9 text-sm" disabled={items.length === 0}>
-                <Send className="h-3.5 w-3.5" /> Submit for Review
-              </Button>
-            </div>
+            {/* Submit — sticky visible on desktop */}
+            <Button
+              onClick={() => setSubmitConfirmOpen(true)}
+              className="bg-gradient-amber shadow-amber gap-2 h-9 px-5 text-sm shrink-0 hidden lg:flex"
+              disabled={items.length === 0}
+            >
+              <Send className="h-3.5 w-3.5" /> Submit for Review
+            </Button>
           </div>
 
-          {/* Layer 2: Toolbar */}
-          <div className="flex items-center gap-2 pb-2.5 flex-wrap lg:flex-nowrap">
-            {/* Search */}
-            <div className="relative flex-1 min-w-32">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-              <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search..." className="pl-8 h-8 text-sm" />
+          {/* Row 2: Search + Category pills + Progress + Filters */}
+          <div className="flex items-center gap-3 pb-3 flex-wrap lg:flex-nowrap">
+            {/* LEFT: Search */}
+            <div className="relative min-w-[180px] lg:min-w-[240px] lg:max-w-xs">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/60" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search items…"
+                className="pl-9 h-10 text-sm bg-card border-border/50"
+              />
             </div>
 
-            {/* Category chips */}
-            <div className="flex gap-1 overflow-x-auto no-scrollbar flex-1">
+            {/* LEFT: Category pills */}
+            <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
               <button
-                className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${filterCategory === "all" ? "bg-primary text-primary-foreground" : "bg-muted/60 text-muted-foreground hover:bg-muted"}`}
+                className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${filterCategory === "all" ? "bg-foreground text-background" : "bg-muted/50 text-muted-foreground hover:bg-muted"}`}
                 onClick={() => setFilterCategory("all")}
               >All</button>
               {allCategories.map(c => (
                 <button
                   key={c}
-                  className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${filterCategory === c ? "bg-primary text-primary-foreground" : "bg-muted/60 text-muted-foreground hover:bg-muted"}`}
+                  className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${filterCategory === c ? "bg-foreground text-background" : "bg-muted/50 text-muted-foreground hover:bg-muted"}`}
                   onClick={() => setFilterCategory(c)}
                 >{c}</button>
               ))}
             </div>
 
-            {/* Uncounted filter */}
-            <button
-              className={`shrink-0 px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${showOnlyEmpty ? "bg-warning/20 text-warning border border-warning/30" : "bg-muted/60 text-muted-foreground hover:bg-muted"}`}
-              onClick={() => setShowOnlyEmpty(!showOnlyEmpty)}
-            >Uncounted</button>
-
-            {/* Category mode */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="h-8 gap-1 text-[11px] shrink-0 hidden lg:flex">
-                  <ListOrdered className="h-3 w-3" />
-                  {categoryMode === "list_order" ? "List Order" : categoryMode === "custom-categories" ? "AI Categories" : "My Categories"}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => { setCategoryMode("list_order"); setFilterCategory("all"); }}>List Order</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => { setCategoryMode("custom-categories"); setFilterCategory("all"); }}>Custom Categories (AI)</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => { setCategoryMode("my-categories"); setFilterCategory("all"); }}>My Categories</DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-
-            {/* View toggle — desktop only */}
-            <div className="hidden lg:flex items-center border rounded-md overflow-hidden h-8">
-              <button
-                className={`px-2 h-full transition-colors ${viewToggle === "table" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted/50"}`}
-                onClick={() => setViewToggle("table")}
-              ><ListIcon className="h-3.5 w-3.5" /></button>
-              <button
-                className={`px-2 h-full transition-colors ${viewToggle === "compact" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted/50"}`}
-                onClick={() => setViewToggle("compact")}
-              ><LayoutGrid className="h-3.5 w-3.5" /></button>
+            {/* CENTER: Progress — desktop */}
+            <div className="hidden lg:flex items-center gap-3 mx-auto shrink-0">
+              <div className="text-center">
+                <p className="text-sm font-bold tabular-nums">{countedItems} <span className="text-muted-foreground font-normal">/ {totalItems}</span></p>
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wide">counted</p>
+              </div>
+              <div className="w-32 h-2 rounded-full bg-muted/60 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-amber transition-all duration-500"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+              <span className="text-xs font-medium tabular-nums text-muted-foreground">{progressPct}%</span>
             </div>
 
-            {/* Jump + Add — desktop */}
-            <div className="hidden lg:flex gap-1.5">
-              <Button size="sm" variant="outline" className="h-8 gap-1 text-[11px]" onClick={jumpToNextEmpty}>
-                <SkipForward className="h-3 w-3" /> Next
+            {/* RIGHT: View toggle + Filters */}
+            <div className="hidden lg:flex items-center gap-2 ml-auto shrink-0">
+              {/* View toggle */}
+              <div className="flex items-center border rounded-lg overflow-hidden h-9">
+                <button
+                  className={`px-3 h-full text-xs font-medium transition-all ${viewToggle === "table" ? "bg-foreground text-background" : "bg-background text-muted-foreground hover:bg-muted/50"}`}
+                  onClick={() => setViewToggle("table")}
+                >Standard</button>
+                <button
+                  className={`px-3 h-full text-xs font-medium transition-all ${viewToggle === "compact" ? "bg-foreground text-background" : "bg-background text-muted-foreground hover:bg-muted/50"}`}
+                  onClick={() => setViewToggle("compact")}
+                >Compact</button>
+              </div>
+
+              {/* Status filter dropdown */}
+              <Select value={statusFilter} onValueChange={(v: any) => setStatusFilter(v)}>
+                <SelectTrigger className="h-9 w-[130px] text-xs">
+                  <Filter className="h-3.5 w-3.5 mr-1.5" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Show All</SelectItem>
+                  <SelectItem value="uncounted">Uncounted</SelectItem>
+                  <SelectItem value="low">Low Stock</SelectItem>
+                  <SelectItem value="critical">Critical</SelectItem>
+                </SelectContent>
+              </Select>
+
+              {/* Quick actions */}
+              <Button size="sm" variant="outline" className="h-9 gap-1.5 text-xs" onClick={jumpToNextEmpty}>
+                <SkipForward className="h-3.5 w-3.5" /> Next Empty
               </Button>
-              <Button variant="outline" className="gap-1.5 text-[11px] h-8" onClick={() => setClearEntriesSessionId(activeSession.id)}>
-                <Eraser className="h-3 w-3" /> Clear
-              </Button>
-              <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-                <DialogTrigger asChild>
-                  <Button size="sm" variant="outline" className="gap-1 h-8 text-[11px]"><Plus className="h-3 w-3" /> Add</Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader><DialogTitle>Add Item</DialogTitle></DialogHeader>
-                  <div className="space-y-3">
-                    <div className="space-y-1"><Label>Item Name</Label><Input value={newItem.item_name} onChange={(e) => setNewItem({ ...newItem, item_name: e.target.value })} className="h-10" /></div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1"><Label>Category</Label>
-                        <Select value={newItem.category} onValueChange={(v) => setNewItem({ ...newItem, category: v })}>
-                          <SelectTrigger className="h-10"><SelectValue /></SelectTrigger>
-                          <SelectContent>{defaultCategories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-1"><Label>Unit</Label><Input value={newItem.unit} onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })} placeholder="lbs, packs..." className="h-10" /></div>
-                    </div>
-                    <div className="grid grid-cols-3 gap-3">
-                      <div className="space-y-1"><Label>Stock</Label><Input type="number" value={newItem.current_stock} onChange={(e) => setNewItem({ ...newItem, current_stock: +e.target.value })} className="h-10" /></div>
-                      <div className="space-y-1"><Label>PAR Level</Label><Input type="number" value={newItem.par_level} onChange={(e) => setNewItem({ ...newItem, par_level: +e.target.value })} className="h-10" /></div>
-                      <div className="space-y-1"><Label>Unit Cost</Label><Input type="number" value={newItem.unit_cost} onChange={(e) => setNewItem({ ...newItem, unit_cost: +e.target.value })} className="h-10" /></div>
-                    </div>
-                    <Button onClick={handleAddItem} className="w-full bg-gradient-amber">Add</Button>
-                  </div>
-                </DialogContent>
-              </Dialog>
-              {catalogItems.length > 0 &&
-                <Dialog open={catalogOpen} onOpenChange={setCatalogOpen}>
-                  <DialogTrigger asChild>
-                    <Button size="sm" variant="outline" className="gap-1 h-8 text-[11px]"><BookOpen className="h-3 w-3" /> Catalog</Button>
-                  </DialogTrigger>
-                  <DialogContent className="max-w-lg">
-                    <DialogHeader><DialogTitle>Add from Catalog</DialogTitle></DialogHeader>
-                    <div className="max-h-80 overflow-y-auto space-y-0.5">
-                      {catalogItems.map((ci) =>
-                        <div key={ci.id} className="flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-muted/50 transition-colors">
-                          <div>
-                            <p className="text-sm font-medium">{ci.item_name}</p>
-                            <p className="text-[11px] text-muted-foreground">{[ci.category, ci.unit, ci.vendor_name].filter(Boolean).join(" · ")}</p>
-                          </div>
-                          <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => handleAddFromCatalog(ci)}><Plus className="h-4 w-4" /></Button>
-                        </div>
-                      )}
-                    </div>
-                  </DialogContent>
-                </Dialog>
-              }
+
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="icon" className="h-9 w-9">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setClearEntriesSessionId(activeSession.id)}>
+                    <Eraser className="h-3.5 w-3.5 mr-2" /> Clear entries
+                  </DropdownMenuItem>
+                  <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+                    <DialogTrigger asChild>
+                      <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                        <Plus className="h-3.5 w-3.5 mr-2" /> Add item
+                      </DropdownMenuItem>
+                    </DialogTrigger>
+                  </Dialog>
+                  {catalogItems.length > 0 && (
+                    <DropdownMenuItem onClick={() => setCatalogOpen(true)}>
+                      <BookOpen className="h-3.5 w-3.5 mr-2" /> Add from catalog
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => { setCategoryMode(categoryMode === "list_order" ? "custom-categories" : categoryMode === "custom-categories" ? "my-categories" : "list_order"); setFilterCategory("all"); }}>
+                    <ListOrdered className="h-3.5 w-3.5 mr-2" />
+                    {categoryMode === "list_order" ? "Switch to AI Categories" : categoryMode === "custom-categories" ? "Switch to My Categories" : "Switch to List Order"}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
         </div>
 
-        {/* Progress bar for desktop */}
-        {!isCompact && totalItems > 0 && (
-          <div className="mt-3 mb-2">
-            <ProgressBar counted={countedItems} total={totalItems} />
+        {/* ═══ MOBILE PROGRESS BAR ═══ */}
+        {isCompact && totalItems > 0 && (
+          <div className="py-3 px-1">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-sm font-bold tabular-nums">{countedItems} / {totalItems} <span className="font-normal text-muted-foreground">counted</span></span>
+              <span className="text-xs font-medium text-muted-foreground tabular-nums">{progressPct}%</span>
+            </div>
+            <div className="h-2 rounded-full bg-muted/60 overflow-hidden">
+              <div className="h-full rounded-full bg-gradient-amber transition-all duration-500" style={{ width: `${progressPct}%` }} />
+            </div>
           </div>
         )}
 
-        {/* Main content */}
+        {/* ═══ MAIN CONTENT ═══ */}
         {filteredItems.length === 0 ? (
-          <Card className="border shadow-sm mt-4">
-            <CardContent className="empty-state">
-              <Package className="empty-state-icon" />
-              <p className="empty-state-title">No items yet</p>
-              <p className="empty-state-description">Add items manually or from your catalog to start counting.</p>
-            </CardContent>
-          </Card>
+          <div className="rounded-xl border border-border/40 bg-card mt-4">
+            <div className="py-16 text-center">
+              <Package className="h-12 w-12 text-muted-foreground/20 mx-auto mb-4" />
+              <p className="text-sm font-medium text-muted-foreground">No items match your filters</p>
+              <p className="text-xs text-muted-foreground/70 mt-1 max-w-xs mx-auto">Try adjusting your search or category filter, or add new items.</p>
+              <Button variant="outline" className="mt-4 gap-1.5" onClick={() => { setSearch(""); setFilterCategory("all"); setStatusFilter("all"); }}>
+                Clear Filters
+              </Button>
+            </div>
+          </div>
         ) : useCompactLayout ? (
           /* ─── CARD LAYOUT (tablet/mobile or compact toggle) ─── */
-          <div className="space-y-5 mt-4">
-            {/* Progress bar — mobile */}
-            {totalItems > 0 && <ProgressBar counted={countedItems} total={totalItems} />}
+          <div className="space-y-6 mt-2">
             {sortedCategoryKeys.map((category) => {
               const catItems = groupedItems[category];
               return (
-              <div key={category}>
-                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70 mb-2 px-1">{category}</p>
-                <div className="space-y-2">
-                  {catItems.map((item, idx) => {
-                    const globalIdx = filteredItems.indexOf(item);
-                    const approvedPar = getApprovedPar(item.item_name);
-                    const need = approvedPar !== null && Number(item.current_stock) !== null
-                      ? Math.max(0, approvedPar - Number(item.current_stock ?? 0))
-                      : null;
-                    const risk = getRisk(Number(item.current_stock ?? 0), approvedPar);
-                    return (
-                      <Card key={item.id} className={`border shadow-sm ${risk.rowBg}`}>
-                        <CardContent className="p-3 space-y-2">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                              <p className="font-semibold text-sm truncate">{item.item_name}</p>
-                              <p className="text-[11px] text-muted-foreground">
-                                {[item.unit, item.pack_size].filter(Boolean).join(" · ") || "—"}
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px]`}>{risk.label}</Badge>
-                              {savingId === item.id && <span className="text-[10px] text-muted-foreground animate-pulse">Saving…</span>}
-                              {savedId === item.id && <Check className="h-3.5 w-3.5 text-success" />}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <div className="flex-1">
-                              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">On Hand</label>
-                              <Input
-                                ref={el => { inputRefs.current[item.id] = el; }}
-                                inputMode="decimal"
-                                type="number"
-                                min={0}
-                                step={0.1}
-                                value={item.current_stock == null ? "" : String(item.current_stock)}
-                                onFocus={(e) => e.target.select()}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  handleUpdateStock(item.id, val === "" ? 0 : parseFloat(val) || 0);
-                                }}
-                                onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
-                                onKeyDown={(e) => handleKeyDown(e, globalIdx, "stock")}
-                                className="h-12 text-lg font-mono text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                              />
-                            </div>
-                            <div className="shrink-0 text-center">
-                              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">PAR</label>
-                              <p className="h-12 flex items-center justify-center text-lg font-mono text-muted-foreground">
-                                {approvedPar !== null ? approvedPar : "—"}
-                              </p>
-                            </div>
-                            {need !== null && need > 0 && (
-                              <div className="shrink-0 text-center">
-                                <label className="text-[10px] font-medium text-warning uppercase tracking-wide">Need</label>
-                                <p className="h-12 flex items-center justify-center text-lg font-mono text-warning font-semibold">
-                                  {need % 1 === 0 ? need : need.toFixed(1)}
+                <div key={category}>
+                  <div className="flex items-center gap-2 mb-3 px-1">
+                    <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground/60">{category}</p>
+                    <span className="text-[10px] text-muted-foreground/40 tabular-nums">({catItems.length})</span>
+                  </div>
+                  <div className="space-y-2.5">
+                    {catItems.map((item) => {
+                      const globalIdx = filteredItems.indexOf(item);
+                      const approvedPar = getApprovedPar(item.item_name);
+                      const need = approvedPar !== null && item.current_stock !== null
+                        ? Math.max(0, approvedPar - Number(item.current_stock ?? 0))
+                        : null;
+                      const risk = getRisk(Number(item.current_stock ?? 0), approvedPar);
+                      const rowState = getRowState(item);
+                      const isRecentlyEdited = lastEditedId === item.id;
+
+                      return (
+                        <div
+                          key={item.id}
+                          className={`rounded-xl border transition-all duration-200 ${
+                            rowState === "counted" ? "border-success/20 bg-success/[0.03]" :
+                            rowState === "zero" ? "border-border/30 bg-muted/10" :
+                            "border-border/40 bg-card"
+                          } ${isRecentlyEdited ? "ring-2 ring-primary/20" : ""}`}
+                        >
+                          <div className="p-4 space-y-3">
+                            {/* Item identity */}
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <p className="font-semibold text-sm leading-tight">{item.item_name}</p>
+                                <p className="text-xs text-muted-foreground/60 mt-0.5">
+                                  {[item.pack_size, item.unit].filter(Boolean).join(" · ") || "—"}
                                 </p>
+                              </div>
+                              <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px] font-medium shrink-0`}>
+                                {risk.label}
+                              </Badge>
+                            </div>
+
+                            {/* Count input area — large targets for tablet */}
+                            <div className="flex items-end gap-4">
+                              <div className="flex-1">
+                                <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5 block">On Hand</label>
+                                <Input
+                                  ref={el => { inputRefs.current[item.id] = el; }}
+                                  inputMode="decimal"
+                                  type="number"
+                                  min={0}
+                                  step={0.1}
+                                  value={item.current_stock == null ? "" : String(item.current_stock)}
+                                  onFocus={(e) => e.target.select()}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    handleUpdateStock(item.id, val === "" ? 0 : parseFloat(val) || 0);
+                                  }}
+                                  onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
+                                  onKeyDown={(e) => handleKeyDown(e, globalIdx, "stock")}
+                                  className="h-14 text-xl font-mono text-center font-semibold rounded-lg border-2 border-border/60 focus:border-primary/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                />
+                              </div>
+                              <div className="shrink-0 text-center w-16">
+                                <label className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1.5 block">PAR</label>
+                                <p className="h-14 flex items-center justify-center text-lg font-mono text-muted-foreground/70">
+                                  {approvedPar !== null ? approvedPar : "—"}
+                                </p>
+                              </div>
+                              {need !== null && need > 0 && (
+                                <div className="shrink-0 text-center w-16">
+                                  <label className="text-[10px] font-semibold text-warning uppercase tracking-wider mb-1.5 block">Need</label>
+                                  <p className="h-14 flex items-center justify-center text-lg font-mono text-warning font-bold">
+                                    {need % 1 === 0 ? need : need.toFixed(1)}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Save indicator */}
+                            {(savingId === item.id || savedId === item.id) && (
+                              <div className="flex items-center gap-1.5">
+                                {savingId === item.id && <span className="text-[10px] text-muted-foreground animate-pulse">Saving…</span>}
+                                {savedId === item.id && <span className="text-[10px] text-success flex items-center gap-0.5"><Check className="h-3 w-3" /> Saved</span>}
                               </div>
                             )}
                           </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
               );
             })}
           </div>
         ) : (
-          /* ─── TABLE LAYOUT (desktop) ─── */
-          <Card className="overflow-hidden border shadow-sm mt-3">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/30">
-                  <TableHead className="text-xs font-semibold">Item</TableHead>
-                  <TableHead className="text-xs font-semibold w-28">On Hand</TableHead>
-                  <TableHead className="text-xs font-semibold w-20">PAR</TableHead>
-                  <TableHead className="text-xs font-semibold w-20">Need</TableHead>
-                  <TableHead className="text-xs font-semibold w-24">Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredItems.map((item, idx) => {
-                  const approvedPar = getApprovedPar(item.item_name);
-                  const currentStock = Number(item.current_stock ?? 0);
-                  const need = approvedPar !== null ? Math.max(0, approvedPar - currentStock) : null;
-                  const risk = getRisk(currentStock, approvedPar);
-                  return (
-                    <TableRow key={item.id} className={`transition-colors ${risk.rowBg} hover:brightness-[0.97]`}>
-                      <TableCell>
-                        <p className="font-medium text-sm leading-tight">{item.item_name}</p>
-                        {item.pack_size && <p className="text-[11px] text-muted-foreground mt-0.5">{item.pack_size}</p>}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1.5">
-                          <Input
-                            ref={el => { inputRefs.current[item.id] = el; }}
-                            type="number"
-                            inputMode="decimal"
-                            min={0}
-                            step={0.1}
-                            value={item.current_stock == null ? "" : String(item.current_stock)}
-                            onFocus={(e) => e.target.select()}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              handleUpdateStock(item.id, val === "" ? 0 : parseFloat(val) || 0);
-                            }}
-                            onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
-                            onKeyDown={(e) => handleKeyDown(e, idx, "stock")}
-                            className="w-20 h-8 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                          />
-                          {savingId === item.id && <span className="text-[10px] text-muted-foreground animate-pulse">…</span>}
-                          {savedId === item.id && <Check className="h-3 w-3 text-success" />}
-                        </div>
-                      </TableCell>
-                      <TableCell className="font-mono text-sm text-muted-foreground">
-                        {approvedPar !== null ? approvedPar : <span className="text-muted-foreground/40">—</span>}
-                      </TableCell>
-                      <TableCell>
-                        {need !== null && need > 0
-                          ? <span className="font-mono text-sm font-semibold text-destructive">{need % 1 === 0 ? need : need.toFixed(1)}</span>
-                          : <span className="text-muted-foreground/40 text-sm">—</span>
-                        }
-                      </TableCell>
-                      <TableCell>
-                        <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px]`}>
-                          {risk.label}
-                        </Badge>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </Card>
-        )}
+          /* ─── TABLE LAYOUT (desktop standard) ─── */
+          <div className="mt-4 space-y-6">
+            {sortedCategoryKeys.map((category) => {
+              const catItems = groupedItems[category];
+              return (
+                <div key={category} className="rounded-xl border border-border/40 overflow-hidden bg-card">
+                  {/* Category header */}
+                  <div className="px-5 py-3 bg-muted/30 border-b border-border/30">
+                    <div className="flex items-center gap-2">
+                      <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground/70">{category}</p>
+                      <span className="text-[10px] text-muted-foreground/40 tabular-nums">({catItems.length})</span>
+                    </div>
+                  </div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-b border-border/20 hover:bg-transparent">
+                        <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60 pl-5">Item</TableHead>
+                        <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60 w-36 text-center">On Hand</TableHead>
+                        <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60 w-20 text-right">PAR</TableHead>
+                        <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60 w-20 text-right">Need</TableHead>
+                        <TableHead className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60 w-24 text-center pr-5">Status</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {catItems.map((item) => {
+                        const globalIdx = filteredItems.indexOf(item);
+                        const approvedPar = getApprovedPar(item.item_name);
+                        const currentStock = Number(item.current_stock ?? 0);
+                        const need = approvedPar !== null ? Math.max(0, approvedPar - currentStock) : null;
+                        const risk = getRisk(currentStock, approvedPar);
+                        const rowState = getRowState(item);
+                        const rowBg = getRowBgClass(item, risk);
+                        const isRecentlyEdited = lastEditedId === item.id;
 
-        {/* Mobile/tablet bottom sticky bar */}
-        {isCompact && (
-          <div className="fixed bottom-0 left-0 right-0 z-30 bg-background/95 backdrop-blur-sm border-t p-3 flex gap-2 safe-area-bottom">
-            <Button variant="outline" className="flex-1 gap-1.5 h-11 text-sm" onClick={() => setClearEntriesSessionId(activeSession.id)}>
-              <Eraser className="h-4 w-4" /> Clear
-            </Button>
-            <Button className="flex-1 bg-gradient-amber shadow-amber gap-1.5 h-11 text-sm" onClick={() => setSubmitConfirmOpen(true)} disabled={items.length === 0}>
-              <Send className="h-4 w-4" /> Submit
-            </Button>
+                        return (
+                          <TableRow
+                            key={item.id}
+                            className={`border-b border-border/10 transition-all duration-200 hover:bg-muted/20 ${rowBg} ${isRecentlyEdited ? "bg-primary/[0.03]" : ""}`}
+                          >
+                            <TableCell className="pl-5 py-3">
+                              <p className="font-medium text-sm leading-tight">{item.item_name}</p>
+                              <p className="text-[11px] text-muted-foreground/50 mt-0.5">{item.pack_size || ""}</p>
+                            </TableCell>
+                            <TableCell className="text-center py-3">
+                              <div className="flex items-center justify-center gap-2">
+                                <Input
+                                  ref={el => { inputRefs.current[item.id] = el; }}
+                                  type="number"
+                                  inputMode="decimal"
+                                  min={0}
+                                  step={0.1}
+                                  value={item.current_stock == null ? "" : String(item.current_stock)}
+                                  onFocus={(e) => e.target.select()}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    handleUpdateStock(item.id, val === "" ? 0 : parseFloat(val) || 0);
+                                  }}
+                                  onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
+                                  onKeyDown={(e) => handleKeyDown(e, globalIdx, "stock")}
+                                  className="w-24 h-10 text-base font-mono text-center font-semibold rounded-lg border-2 border-border/50 focus:border-primary/50 bg-background [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                />
+                                <div className="w-5">
+                                  {savingId === item.id && <span className="text-muted-foreground animate-pulse text-xs">…</span>}
+                                  {savedId === item.id && <Check className="h-3.5 w-3.5 text-success" />}
+                                </div>
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-sm text-muted-foreground/60 py-3">
+                              {approvedPar !== null ? approvedPar : <span className="text-muted-foreground/30">—</span>}
+                            </TableCell>
+                            <TableCell className="text-right py-3">
+                              {need !== null && need > 0
+                                ? <span className="font-mono text-sm font-semibold text-destructive">{need % 1 === 0 ? need : need.toFixed(1)}</span>
+                                : <span className="text-muted-foreground/30 text-sm">—</span>
+                              }
+                            </TableCell>
+                            <TableCell className="text-center pr-5 py-3">
+                              <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px] font-medium`}>
+                                {risk.label}
+                              </Badge>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              );
+            })}
           </div>
         )}
 
-        {/* Submit confirmation modal */}
+        {/* ═══ TABLET/MOBILE STICKY BOTTOM BAR ═══ */}
+        {isCompact && (
+          <div className="fixed bottom-0 left-0 right-0 z-30 bg-background/95 backdrop-blur-md border-t border-border/40 safe-area-bottom">
+            <div className="flex items-center gap-3 px-4 py-3">
+              {/* Progress mini */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <div className="h-1.5 flex-1 rounded-full bg-muted/60 overflow-hidden">
+                    <div className="h-full rounded-full bg-gradient-amber transition-all" style={{ width: `${progressPct}%` }} />
+                  </div>
+                  <span className="text-[10px] font-medium text-muted-foreground tabular-nums shrink-0">{countedItems}/{totalItems}</span>
+                </div>
+              </div>
+
+              {/* Quick filter */}
+              <Button
+                variant={showOnlyEmpty ? "default" : "outline"}
+                size="sm"
+                className={`h-10 text-xs shrink-0 ${showOnlyEmpty ? "bg-foreground text-background" : ""}`}
+                onClick={() => setShowOnlyEmpty(!showOnlyEmpty)}
+              >
+                Uncounted
+              </Button>
+
+              {/* Submit */}
+              <Button
+                className="bg-gradient-amber shadow-amber h-11 px-5 text-sm font-medium shrink-0"
+                onClick={() => setSubmitConfirmOpen(true)}
+                disabled={items.length === 0}
+              >
+                <Send className="h-4 w-4 mr-1.5" /> Submit
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* ═══ SUBMIT CONFIRMATION MODAL ═══ */}
         <AlertDialog open={submitConfirmOpen} onOpenChange={setSubmitConfirmOpen}>
-          <AlertDialogContent>
+          <AlertDialogContent className="max-w-md">
             <AlertDialogHeader>
-              <AlertDialogTitle>Submit for review?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This will send the inventory count to a manager for review. You won't be able to edit counts until it's sent back.
+              <AlertDialogTitle className="text-lg">Submit for Review?</AlertDialogTitle>
+              <AlertDialogDescription className="text-sm">
+                This will send the inventory count to a manager for review.
               </AlertDialogDescription>
             </AlertDialogHeader>
-            <AlertDialogFooter>
+
+            {/* Summary cards */}
+            <div className="grid grid-cols-2 gap-3 my-2">
+              <div className="rounded-lg bg-muted/30 p-3 text-center">
+                <p className="text-2xl font-bold tabular-nums">{submitSummary.counted}</p>
+                <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Items Counted</p>
+              </div>
+              <div className="rounded-lg bg-muted/30 p-3 text-center">
+                <p className="text-2xl font-bold tabular-nums">{submitSummary.total - submitSummary.counted}</p>
+                <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Uncounted</p>
+              </div>
+              <div className="rounded-lg bg-warning/10 p-3 text-center">
+                <p className="text-2xl font-bold text-warning tabular-nums">{submitSummary.lowCount}</p>
+                <p className="text-[10px] font-medium text-warning uppercase tracking-wide">Low Stock</p>
+              </div>
+              <div className="rounded-lg bg-destructive/10 p-3 text-center">
+                <p className="text-2xl font-bold text-destructive tabular-nums">{submitSummary.criticalCount}</p>
+                <p className="text-[10px] font-medium text-destructive uppercase tracking-wide">Critical</p>
+              </div>
+            </div>
+
+            {submitSummary.estimatedValue > 0 && (
+              <div className="rounded-lg border border-border/40 p-3 text-center">
+                <p className="text-xs text-muted-foreground">Estimated Reorder Value</p>
+                <p className="text-lg font-bold tabular-nums">${submitSummary.estimatedValue.toFixed(2)}</p>
+              </div>
+            )}
+
+            <AlertDialogFooter className="mt-2">
               <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={() => { setSubmitConfirmOpen(false); handleSubmitForReview(); }} className="bg-gradient-amber">Submit</AlertDialogAction>
+              <AlertDialogAction onClick={() => { setSubmitConfirmOpen(false); handleSubmitForReview(); }} className="bg-gradient-amber">
+                Confirm Submit
+              </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        {/* Add Item Dialog */}
+        <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Add Item</DialogTitle></DialogHeader>
+            <div className="space-y-3">
+              <div className="space-y-1"><Label>Item Name</Label><Input value={newItem.item_name} onChange={(e) => setNewItem({ ...newItem, item_name: e.target.value })} className="h-10" /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1"><Label>Category</Label>
+                  <Select value={newItem.category} onValueChange={(v) => setNewItem({ ...newItem, category: v })}>
+                    <SelectTrigger className="h-10"><SelectValue /></SelectTrigger>
+                    <SelectContent>{defaultCategories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1"><Label>Unit</Label><Input value={newItem.unit} onChange={(e) => setNewItem({ ...newItem, unit: e.target.value })} placeholder="lbs, packs..." className="h-10" /></div>
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-1"><Label>Stock</Label><Input type="number" value={newItem.current_stock} onChange={(e) => setNewItem({ ...newItem, current_stock: +e.target.value })} className="h-10" /></div>
+                <div className="space-y-1"><Label>PAR Level</Label><Input type="number" value={newItem.par_level} onChange={(e) => setNewItem({ ...newItem, par_level: +e.target.value })} className="h-10" /></div>
+                <div className="space-y-1"><Label>Unit Cost</Label><Input type="number" value={newItem.unit_cost} onChange={(e) => setNewItem({ ...newItem, unit_cost: +e.target.value })} className="h-10" /></div>
+              </div>
+              <Button onClick={handleAddItem} className="w-full bg-gradient-amber">Add</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Catalog Dialog */}
+        {catalogItems.length > 0 && (
+          <Dialog open={catalogOpen} onOpenChange={setCatalogOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader><DialogTitle>Add from Catalog</DialogTitle></DialogHeader>
+              <div className="max-h-80 overflow-y-auto space-y-0.5">
+                {catalogItems.map((ci) =>
+                  <div key={ci.id} className="flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-muted/50 transition-colors">
+                    <div>
+                      <p className="text-sm font-medium">{ci.item_name}</p>
+                      <p className="text-[11px] text-muted-foreground">{[ci.category, ci.unit, ci.vendor_name].filter(Boolean).join(" · ")}</p>
+                    </div>
+                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => handleAddFromCatalog(ci)}><Plus className="h-4 w-4" /></Button>
+                  </div>
+                )}
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
 
         {/* Clear Entries Confirm */}
         <AlertDialog open={!!clearEntriesSessionId} onOpenChange={(o) => !o && setClearEntriesSessionId(null)}>
@@ -1247,6 +1417,25 @@ export default function EnterInventoryPage() {
           <p className="text-sm text-muted-foreground mt-0.5">Manage your counts, reviews, and history</p>
         </div>
         <div className="flex items-center gap-2">
+          {/* Location switcher for multi-location */}
+          {locations.length > 1 && (
+            <Select value={currentLocation?.id || "all"} onValueChange={(v) => {
+              if (v === "all") setCurrentLocation(null);
+              else {
+                const loc = locations.find(l => l.id === v);
+                if (loc) setCurrentLocation(loc);
+              }
+            }}>
+              <SelectTrigger className="h-9 w-40 text-xs gap-1.5">
+                <MapPin className="h-3.5 w-3.5 shrink-0" />
+                <SelectValue placeholder="All Locations" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Locations</SelectItem>
+                {locations.map(l => <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          )}
           <Select value={selectedList} onValueChange={setSelectedList}>
             <SelectTrigger className="h-9 w-40 lg:w-48 text-xs"><SelectValue placeholder="Inventory List" /></SelectTrigger>
             <SelectContent>
@@ -1315,16 +1504,15 @@ export default function EnterInventoryPage() {
           </Card>
         ) : (
           <div className="space-y-3">
-            {/* Primary session — featured card */}
             {(() => {
               const s = inProgressSessions[0];
               const stats = sessionStats[s.id];
               const counted = stats?.counted ?? 0;
               const total = stats?.total ?? 0;
+              const pct = total > 0 ? Math.round((counted / total) * 100) : 0;
               return (
                 <Card key={s.id} className="border shadow-sm overflow-hidden">
                   <CardContent className="p-0">
-                    {/* Session header */}
                     <div className="flex items-start justify-between p-4 pb-3">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
@@ -1349,14 +1537,18 @@ export default function EnterInventoryPage() {
                       </DropdownMenu>
                     </div>
 
-                    {/* Progress bar */}
                     {total > 0 && (
                       <div className="px-4 pb-3">
-                        <ProgressBar counted={counted} total={total} />
+                        <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
+                          <span>{counted} / {total} counted</span>
+                          <span>{pct}%</span>
+                        </div>
+                        <div className="h-2 rounded-full bg-muted/60 overflow-hidden">
+                          <div className="h-full rounded-full bg-gradient-amber transition-all duration-300" style={{ width: `${pct}%` }} />
+                        </div>
                       </div>
                     )}
 
-                    {/* Actions */}
                     <div className="flex gap-2 px-4 pb-4">
                       <Button className="bg-gradient-amber shadow-amber gap-2 flex-1" onClick={() => openEditor(s)}>
                         <ChevronRight className="h-4 w-4" /> Continue count
@@ -1367,7 +1559,6 @@ export default function EnterInventoryPage() {
               );
             })()}
 
-            {/* Additional sessions — compact rows */}
             {inProgressSessions.slice(1).map(s => {
               const stats = sessionStats[s.id];
               const counted = stats?.counted ?? 0;
@@ -1578,15 +1769,15 @@ export default function EnterInventoryPage() {
             <div className="grid grid-cols-4 gap-2 mb-2">
               <div className="rounded-lg bg-destructive/10 p-3 text-center">
                 <p className="text-lg font-bold text-destructive">{viewRiskSummary.red || 0}</p>
-                <p className="text-[10px] font-medium text-destructive uppercase tracking-wide">High Risk</p>
+                <p className="text-[10px] font-medium text-destructive uppercase tracking-wide">Critical</p>
               </div>
               <div className="rounded-lg bg-warning/10 p-3 text-center">
                 <p className="text-lg font-bold text-warning">{viewRiskSummary.yellow || 0}</p>
-                <p className="text-[10px] font-medium text-warning uppercase tracking-wide">Medium</p>
+                <p className="text-[10px] font-medium text-warning uppercase tracking-wide">Low</p>
               </div>
               <div className="rounded-lg bg-success/10 p-3 text-center">
                 <p className="text-lg font-bold text-success">{viewRiskSummary.green || 0}</p>
-                <p className="text-[10px] font-medium text-success uppercase tracking-wide">Low Risk</p>
+                <p className="text-[10px] font-medium text-success uppercase tracking-wide">OK</p>
               </div>
               <div className="rounded-lg bg-muted/60 p-3 text-center">
                 <p className="text-lg font-bold text-muted-foreground">{viewRiskSummary.gray || 0}</p>
