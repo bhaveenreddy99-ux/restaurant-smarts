@@ -1316,7 +1316,11 @@ export type Database = {
           created_by: string | null
           id: string
           inventory_list_id: string | null
+          invoice_date: string | null
+          invoice_number: string | null
+          invoice_status: string
           location_id: string | null
+          pdf_url: string | null
           restaurant_id: string
           smart_order_run_id: string | null
           vendor_name: string | null
@@ -1326,7 +1330,11 @@ export type Database = {
           created_by?: string | null
           id?: string
           inventory_list_id?: string | null
+          invoice_date?: string | null
+          invoice_number?: string | null
+          invoice_status?: string
           location_id?: string | null
+          pdf_url?: string | null
           restaurant_id: string
           smart_order_run_id?: string | null
           vendor_name?: string | null
@@ -1336,7 +1344,11 @@ export type Database = {
           created_by?: string | null
           id?: string
           inventory_list_id?: string | null
+          invoice_date?: string | null
+          invoice_number?: string | null
+          invoice_status?: string
           location_id?: string | null
+          pdf_url?: string | null
           restaurant_id?: string
           smart_order_run_id?: string | null
           vendor_name?: string | null
@@ -1374,8 +1386,10 @@ export type Database = {
       }
       purchase_history_items: {
         Row: {
+          catalog_item_id: string | null
           id: string
           item_name: string
+          match_status: string
           pack_size: string | null
           purchase_history_id: string
           quantity: number
@@ -1383,8 +1397,10 @@ export type Database = {
           unit_cost: number | null
         }
         Insert: {
+          catalog_item_id?: string | null
           id?: string
           item_name: string
+          match_status?: string
           pack_size?: string | null
           purchase_history_id: string
           quantity?: number
@@ -1392,8 +1408,10 @@ export type Database = {
           unit_cost?: number | null
         }
         Update: {
+          catalog_item_id?: string | null
           id?: string
           item_name?: string
+          match_status?: string
           pack_size?: string | null
           purchase_history_id?: string
           quantity?: number
@@ -1401,6 +1419,13 @@ export type Database = {
           unit_cost?: number | null
         }
         Relationships: [
+          {
+            foreignKeyName: "purchase_history_items_catalog_item_id_fkey"
+            columns: ["catalog_item_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_catalog_items"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "purchase_history_items_purchase_history_id_fkey"
             columns: ["purchase_history_id"]

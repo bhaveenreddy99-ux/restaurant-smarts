@@ -4,7 +4,7 @@ import {
   ClipboardList,
   ShoppingCart,
   BookOpen,
-  Truck,
+  FileText,
   BarChart3,
   Users,
   LogOut,
@@ -46,7 +46,7 @@ const inventoryNav = [
 ];
 
 const operationsNav = [
-  { title: "Orders", url: "/app/orders", icon: Truck },
+  { title: "Invoices (Receiving)", url: "/app/invoices", icon: FileText },
 ];
 
 const insightsNav = [

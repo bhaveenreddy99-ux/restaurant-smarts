@@ -7,7 +7,7 @@ import {
   Package, AlertTriangle, TrendingUp, TrendingDown, ShoppingCart, ArrowUpRight,
   Building2, Bell, DollarSign, BarChart3, Sparkles, ChevronDown,
   ClipboardCheck, Clock, CheckCircle2, AlertCircle, Zap, ArrowRight,
-  Shield, Users, CalendarDays, FileText, Activity
+  Shield, Users, CalendarDays, FileText, Activity, Receipt
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
@@ -151,10 +151,10 @@ function ActionCenter({
     },
     {
       icon: Clock,
-      label: `${pendingApprovals} Pending Order Approval${pendingApprovals !== 1 ? "s" : ""}`,
+      label: `${pendingApprovals} Pending Invoice${pendingApprovals !== 1 ? "s" : ""}`,
       color: "text-primary",
       bg: "bg-primary/6",
-      path: "/app/orders",
+      path: "/app/invoices",
       show: pendingApprovals > 0,
     },
     {
@@ -350,6 +350,97 @@ function AnalyticsSection({ highUsage }: { highUsage: any[] }) {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// ─── Spend Overview ───
+function SpendOverview({ restaurantId, navigate }: { restaurantId: string; navigate: (p: string) => void }) {
+  const [spendData, setSpendData] = useState<{ thisWeek: number; thisMonth: number; vendors: { name: string; total: number }[] }>({
+    thisWeek: 0, thisMonth: 0, vendors: [],
+  });
+
+  useEffect(() => {
+    const fetchSpend = async () => {
+      const now = new Date();
+      const weekStart = new Date(now.getTime() - 7 * 86400000);
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+      const { data: recentPH } = await supabase.from("purchase_history").select("id, vendor_name, created_at")
+        .eq("restaurant_id", restaurantId).gte("created_at", monthStart.toISOString());
+
+      if (!recentPH?.length) return;
+
+      const phIds = recentPH.map(p => p.id);
+      const { data: phItems } = await supabase.from("purchase_history_items").select("purchase_history_id, total_cost")
+        .in("purchase_history_id", phIds);
+
+      if (!phItems) return;
+
+      const costByPH: Record<string, number> = {};
+      phItems.forEach(i => {
+        costByPH[i.purchase_history_id] = (costByPH[i.purchase_history_id] || 0) + Number(i.total_cost || 0);
+      });
+
+      let thisWeek = 0, thisMonth = 0;
+      const vendorMap: Record<string, number> = {};
+
+      recentPH.forEach(p => {
+        const cost = costByPH[p.id] || 0;
+        thisMonth += cost;
+        if (new Date(p.created_at) >= weekStart) thisWeek += cost;
+        const vn = p.vendor_name || "Unknown";
+        vendorMap[vn] = (vendorMap[vn] || 0) + cost;
+      });
+
+      const vendors = Object.entries(vendorMap)
+        .map(([name, total]) => ({ name, total }))
+        .sort((a, b) => b.total - a.total)
+        .slice(0, 5);
+
+      setSpendData({ thisWeek, thisMonth, vendors });
+    };
+    fetchSpend();
+  }, [restaurantId]);
+
+  if (spendData.thisMonth === 0) return null;
+
+  return (
+    <Card className="hover:shadow-md transition-all duration-200">
+      <div className="flex items-center justify-between p-5 pb-3">
+        <div className="flex items-center gap-2">
+          <Receipt className="h-4 w-4 text-primary" />
+          <h3 className="text-sm font-bold tracking-tight">Spend Overview</h3>
+        </div>
+        <Button variant="outline" size="sm" className="h-7 text-[10px]" onClick={() => navigate("/app/invoices")}>
+          View All Invoices
+        </Button>
+      </div>
+      <CardContent className="pt-0 pb-4 px-5">
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div className="rounded-lg bg-muted/30 p-3">
+            <p className="text-[11px] text-muted-foreground mb-1">This Week</p>
+            <p className="text-lg font-bold font-mono">${spendData.thisWeek.toFixed(0)}</p>
+          </div>
+          <div className="rounded-lg bg-muted/30 p-3">
+            <p className="text-[11px] text-muted-foreground mb-1">This Month</p>
+            <p className="text-lg font-bold font-mono">${spendData.thisMonth.toFixed(0)}</p>
+          </div>
+        </div>
+        {spendData.vendors.length > 0 && (
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70 mb-2">Top Vendors</p>
+            <div className="space-y-1">
+              {spendData.vendors.map((v, i) => (
+                <div key={i} className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-muted/30 transition-colors">
+                  <span className="text-sm">{v.name}</span>
+                  <span className="text-sm font-mono font-semibold">${v.total.toFixed(0)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -743,6 +834,9 @@ function SingleDashboard() {
         />
         <SmartOrderPreview topReorder={topReorder} navigate={navigate} />
       </div>
+
+      {/* Spend Overview */}
+      {currentRestaurant && <SpendOverview restaurantId={currentRestaurant.id} navigate={navigate} />}
 
       {/* Usage & Trends */}
       <AnalyticsSection highUsage={highUsage} />
