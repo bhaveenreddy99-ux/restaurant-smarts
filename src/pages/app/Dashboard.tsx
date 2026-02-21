@@ -146,7 +146,7 @@ function ActionCenter({
       label: `${missingInventory} Location${missingInventory !== 1 ? "s" : ""} Missing Weekly Inventory`,
       color: "text-warning",
       bg: "bg-warning/6",
-      path: "/app/inventory",
+      path: "/app/inventory/enter",
       show: missingInventory > 0,
     },
     {
@@ -249,7 +249,7 @@ function SmartOrderPreview({
               variant="outline"
               size="sm"
               className="mt-4 text-xs h-8"
-              onClick={() => navigate("/app/inventory")}
+              onClick={() => navigate("/app/inventory/enter")}
             >
               Start Your First Count
             </Button>
@@ -553,7 +553,7 @@ function PortfolioDashboard({ setCurrentRestaurant }: { setCurrentRestaurant: (r
       <CommandBar
         timeFilter={timeFilter}
         setTimeFilter={setTimeFilter}
-        onStartInventory={() => navigate("/app/inventory")}
+        onStartInventory={() => navigate("/app/inventory/enter")}
       />
 
       {/* KPI Cards */}
@@ -696,7 +696,7 @@ function SingleDashboard() {
       <CommandBar
         timeFilter={timeFilter}
         setTimeFilter={setTimeFilter}
-        onStartInventory={() => navigate("/app/inventory")}
+        onStartInventory={() => navigate("/app/inventory/enter")}
       />
 
       {/* Executive KPI Cards */}
