@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useRestaurant } from "@/contexts/RestaurantContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -11,7 +11,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
-import { TrendingUp, TrendingDown, Minus, BellRing, BarChart3, RefreshCw } from "lucide-react";
+import {
+  TrendingUp, TrendingDown, Minus, BellRing, BarChart3, RefreshCw,
+  Sparkles, AlertTriangle, PackageCheck, PackageMinus, ListFilter, CheckSquare
+} from "lucide-react";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface PARSuggestion {
@@ -22,27 +28,57 @@ interface PARSuggestion {
   suggested_par: number;
   change_amount: number;
   change_pct: number;
-  avg_daily_usage: number;
   reason: string;
   confidence: "high" | "medium" | "low";
-  data_source: "usage_events" | "inventory_sessions" | "orders";
+  is_fluctuating: boolean;
+  risk_type: "stockout" | "overstock" | "adjustment" | "missing_par" | null;
+  data_points: number;
+  weekly_usages: number[];
 }
 
-// ─── Computation helpers ──────────────────────────────────────────────────────
+type FilterMode = "all" | "changed" | "major" | "stockout" | "overstock" | "missing_par";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function roundToStep(val: number, step = 0.1): number {
   return Math.round(val / step) * step;
 }
 
-function confidenceLevel(usageDays: number, dataSource: string): "high" | "medium" | "low" {
-  if (dataSource === "usage_events" && usageDays >= 14) return "high";
-  if (dataSource === "usage_events" && usageDays >= 7) return "medium";
-  if (dataSource === "inventory_sessions") return "medium";
+function computeConfidence(dataPoints: number): "high" | "medium" | "low" {
+  if (dataPoints >= 4) return "high";
+  if (dataPoints >= 2) return "medium";
   return "low";
+}
+
+function isFluctuating(weeklyUsages: number[]): boolean {
+  if (weeklyUsages.length < 3) return false;
+  // Check if suggested PAR would change by >15% in 2+ consecutive windows
+  let fluctCount = 0;
+  for (let i = 1; i < weeklyUsages.length; i++) {
+    const prev = weeklyUsages[i - 1];
+    const curr = weeklyUsages[i];
+    if (prev > 0 && Math.abs(curr - prev) / prev > 0.15) {
+      fluctCount++;
+    }
+  }
+  if (fluctCount >= 2) return true;
+  // Also check high variability (coefficient of variation > 0.3)
+  const mean = weeklyUsages.reduce((a, b) => a + b, 0) / weeklyUsages.length;
+  if (mean <= 0) return false;
+  const variance = weeklyUsages.reduce((sum, v) => sum + (v - mean) ** 2, 0) / weeklyUsages.length;
+  const cv = Math.sqrt(variance) / mean;
+  return cv > 0.3;
+}
+
+function buildReason(riskType: string | null, changeAmt: number, avgUsage: number, leadTime: number): string {
+  if (riskType === "stockout") return `Stock frequently near zero before recount. Avg weekly usage ${avgUsage.toFixed(1)} with ${leadTime}d lead time.`;
+  if (riskType === "overstock") return `Consistently high remaining stock suggests PAR is too high. Avg weekly usage ${avgUsage.toFixed(1)}.`;
+  if (riskType === "missing_par") return `No active PAR set. Suggested based on avg weekly usage of ${avgUsage.toFixed(1)}.`;
+  return `Adjusted toward avg weekly usage of ${avgUsage.toFixed(1)} with ${leadTime}d lead time buffer.`;
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function PARSuggestionsPage() {
-  const { currentRestaurant, locations, currentLocation } = useRestaurant();
+  const { currentRestaurant, currentLocation } = useRestaurant();
   const { user } = useAuth();
 
   const [lists, setLists] = useState<any[]>([]);
@@ -51,15 +87,15 @@ export default function PARSuggestionsPage() {
 
   const [selectedList, setSelectedList] = useState("all");
   const [selectedGuide, setSelectedGuide] = useState("all");
-  const [lookback, setLookback] = useState("30");
-  const [coverageDays, setCoverageDays] = useState("7");
-  const [leadTimeDays, setLeadTimeDays] = useState("2");
+  const [filterMode, setFilterMode] = useState<FilterMode>("all");
 
   const [suggestions, setSuggestions] = useState<PARSuggestion[]>([]);
   const [loading, setLoading] = useState(false);
   const [generated, setGenerated] = useState(false);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [notifying, setNotifying] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [applyDialogOpen, setApplyDialogOpen] = useState(false);
 
   const isManagerPlus = currentRestaurant?.role === "OWNER" || currentRestaurant?.role === "MANAGER";
 
@@ -69,12 +105,7 @@ export default function PARSuggestionsPage() {
     supabase.from("inventory_lists").select("id, name").eq("restaurant_id", currentRestaurant.id)
       .then(({ data }) => { if (data) setLists(data); });
     supabase.from("par_settings").select("*").eq("restaurant_id", currentRestaurant.id).maybeSingle()
-      .then(({ data }) => {
-        if (data) {
-          setParSettings(data);
-          setLeadTimeDays(String(data.default_lead_time_days ?? 2));
-        }
-      });
+      .then(({ data }) => { if (data) setParSettings(data); });
   }, [currentRestaurant]);
 
   // Load PAR guides when list changes
@@ -84,18 +115,14 @@ export default function PARSuggestionsPage() {
       .then(({ data }) => { if (data) setParGuides(data); setSelectedGuide("all"); });
   }, [selectedList, currentRestaurant]);
 
-  // ─── Computation ─────────────────────────────────────────────────────────
+  // ─── AI Computation (inventory sessions only) ───────────────────────────
   const generateSuggestions = useCallback(async () => {
     if (!currentRestaurant) return;
     setLoading(true);
     setGenerated(false);
     setSelectedItems(new Set());
 
-    const coverageNum = parseFloat(coverageDays) || 7;
-    const leadTimeNum = parseFloat(leadTimeDays) || 2;
-    const lookbackDays = parseInt(lookback);
-    const since = new Date();
-    since.setDate(since.getDate() - lookbackDays);
+    const leadTimeNum = parSettings?.default_lead_time_days ?? 2;
 
     // 1. Load current PAR items from selected guide(s)
     let parQuery = supabase.from("par_guide_items")
@@ -111,144 +138,331 @@ export default function PARSuggestionsPage() {
 
     const { data: parItems } = await parQuery;
 
-    if (!parItems || parItems.length === 0) {
-      toast.error("No PAR guide items found for the selected filters.");
-      setLoading(false);
-      return;
-    }
-
-    // Deduplicate by item_name (take latest/max par)
+    // Build PAR map (deduplicated)
     const parMap: Record<string, { par_level: number; category: string | null; unit: string | null }> = {};
-    for (const p of parItems) {
-      const key = p.item_name.trim().toLowerCase();
-      if (!parMap[key] || p.par_level > parMap[key].par_level) {
-        parMap[key] = { par_level: Number(p.par_level), category: p.category, unit: p.unit };
-      }
-    }
-
-    // 2. Try usage_events first
-    const { data: usageEvents } = await supabase
-      .from("usage_events")
-      .select("item_name, quantity_used, created_at")
-      .eq("restaurant_id", currentRestaurant.id)
-      .gte("created_at", since.toISOString());
-
-    // Build usage map from events
-    const usageByItem: Record<string, { total: number; dataSource: "usage_events" | "inventory_sessions" | "orders" }> = {};
-
-    if (usageEvents && usageEvents.length > 0) {
-      for (const e of usageEvents) {
-        const key = e.item_name.trim().toLowerCase();
-        if (!usageByItem[key]) usageByItem[key] = { total: 0, dataSource: "usage_events" };
-        usageByItem[key].total += Number(e.quantity_used);
-      }
-    }
-
-    // 3. Fallback: infer from approved sessions
-    const itemsWithNoUsage = Object.keys(parMap).filter(k => !usageByItem[k]);
-    if (itemsWithNoUsage.length > 0) {
-      // Get approved sessions within lookback
-      const { data: sessions } = await supabase
-        .from("inventory_sessions")
-        .select("id, approved_at")
-        .eq("restaurant_id", currentRestaurant.id)
-        .eq("status", "APPROVED")
-        .gte("approved_at", since.toISOString())
-        .order("approved_at", { ascending: true });
-
-      if (sessions && sessions.length >= 2) {
-        // Pair consecutive sessions: usage = stock difference between sessions
-        for (let i = 1; i < sessions.length; i++) {
-          const [s1, s2] = [sessions[i - 1], sessions[i]];
-          const [{ data: i1 }, { data: i2 }] = await Promise.all([
-            supabase.from("inventory_session_items").select("item_name, current_stock").eq("session_id", s1.id),
-            supabase.from("inventory_session_items").select("item_name, current_stock").eq("session_id", s2.id),
-          ]);
-          const map1 = Object.fromEntries((i1 || []).map(x => [x.item_name.trim().toLowerCase(), Number(x.current_stock)]));
-          for (const item of i2 || []) {
-            const key = item.item_name.trim().toLowerCase();
-            const prev = map1[key];
-            if (prev !== undefined) {
-              const used = prev - Number(item.current_stock);
-              if (used > 0) {
-                if (!usageByItem[key]) usageByItem[key] = { total: 0, dataSource: "inventory_sessions" };
-                usageByItem[key].total += used;
-                if (usageByItem[key].dataSource === "orders") usageByItem[key].dataSource = "inventory_sessions";
-              }
-            }
-          }
+    if (parItems) {
+      for (const p of parItems) {
+        const key = p.item_name.trim().toLowerCase();
+        if (!parMap[key] || p.par_level > parMap[key].par_level) {
+          parMap[key] = { par_level: Number(p.par_level), category: p.category, unit: p.unit };
         }
       }
     }
 
-    // 4. Build suggestions
+    // 2. Get last 4 APPROVED sessions (per list/location if filtered)
+    let sessionsQuery = supabase
+      .from("inventory_sessions")
+      .select("id, approved_at, inventory_list_id, location_id")
+      .eq("restaurant_id", currentRestaurant.id)
+      .eq("status", "APPROVED")
+      .not("approved_at", "is", null)
+      .order("approved_at", { ascending: false })
+      .limit(20); // Get more to filter by list later
+
+    if (selectedList !== "all") {
+      sessionsQuery = sessionsQuery.eq("inventory_list_id", selectedList);
+    }
+    if (currentLocation) {
+      sessionsQuery = sessionsQuery.eq("location_id", currentLocation.id);
+    }
+
+    const { data: sessions } = await sessionsQuery;
+
+    // Take last 4
+    const recentSessions = (sessions || []).slice(0, 4);
+
+    if (recentSessions.length < 1) {
+      toast.error("Need at least 1 approved inventory session to generate suggestions.");
+      setLoading(false);
+      setGenerated(true);
+      setSuggestions([]);
+      return;
+    }
+
+    // 3. Load session items for all sessions
+    const sessionIds = recentSessions.map(s => s.id);
+    const { data: allSessionItems } = await supabase
+      .from("inventory_session_items")
+      .select("session_id, item_name, current_stock, par_level, category, unit")
+      .in("session_id", sessionIds);
+
+    if (!allSessionItems || allSessionItems.length === 0) {
+      toast.error("No inventory data found in recent sessions.");
+      setLoading(false);
+      setGenerated(true);
+      setSuggestions([]);
+      return;
+    }
+
+    // 4. Group items by name across sessions
+    const itemData: Record<string, {
+      stocks: number[];
+      sessionPars: number[];
+      category: string | null;
+      unit: string | null;
+    }> = {};
+
+    // Sessions are ordered newest first; reverse for chronological
+    const orderedSessionIds = [...sessionIds].reverse();
+    const sessionIndexMap = Object.fromEntries(orderedSessionIds.map((id, i) => [id, i]));
+
+    for (const si of allSessionItems) {
+      const key = si.item_name.trim().toLowerCase();
+      if (!itemData[key]) {
+        itemData[key] = { stocks: [], sessionPars: [], category: si.category, unit: si.unit };
+      }
+      const idx = sessionIndexMap[si.session_id];
+      if (idx !== undefined) {
+        // Fill arrays at correct index
+        while (itemData[key].stocks.length <= idx) {
+          itemData[key].stocks.push(-1); // placeholder
+          itemData[key].sessionPars.push(-1);
+        }
+        itemData[key].stocks[idx] = Number(si.current_stock);
+        itemData[key].sessionPars[idx] = Number(si.par_level);
+      }
+    }
+
+    // 5. Estimate weekly usage between sessions & compute suggestions
     const result: PARSuggestion[] = [];
 
-    for (const [itemKey, parData] of Object.entries(parMap)) {
-      const usage = usageByItem[itemKey];
-      if (!usage || usage.total <= 0) continue;
+    // Get approvedAt dates for time-diff calculation
+    const sessionDates = orderedSessionIds.map(id => {
+      const s = recentSessions.find(ss => ss.id === id);
+      return s?.approved_at ? new Date(s.approved_at) : new Date();
+    });
 
-      const avgDaily = usage.total / lookbackDays;
-      const suggested = roundToStep(avgDaily * (coverageNum + leadTimeNum));
-      const currentPar = parData.par_level;
-      const changeAmt = suggested - currentPar;
-      const changePct = currentPar > 0 ? (changeAmt / currentPar) * 100 : 100;
+    for (const [itemKey, data] of Object.entries(itemData)) {
+      // Clean up placeholder values
+      const validStocks = data.stocks.filter(s => s >= 0);
+      const dataPoints = validStocks.length;
+      if (dataPoints < 1) continue;
 
-      // Only include if meaningful change
-      if (Math.abs(changeAmt) < 0.5 && Math.abs(changePct) < 10) continue;
+      // Compute usage between consecutive sessions
+      const weeklyUsages: number[] = [];
+      for (let i = 1; i < data.stocks.length; i++) {
+        if (data.stocks[i - 1] >= 0 && data.stocks[i] >= 0) {
+          const used = data.stocks[i - 1] - data.stocks[i];
+          // Estimate days between sessions
+          const daysBetween = Math.max(1, (sessionDates[i].getTime() - sessionDates[i - 1].getTime()) / (86400000));
+          const weeklyRate = (used / daysBetween) * 7;
+          if (weeklyRate > 0) weeklyUsages.push(weeklyRate);
+        }
+      }
 
-      // Find display name (first item in parItems that matches)
-      const displayItem = parItems.find(p => p.item_name.trim().toLowerCase() === itemKey);
+      // Determine risk type
+      let riskType: PARSuggestion["risk_type"] = "adjustment";
+      const lastStock = validStocks[validStocks.length - 1];
+      const currentParLevel = parMap[itemKey]?.par_level ?? data.sessionPars.find(p => p >= 0) ?? 0;
+
+      // Stockout risk: stock near zero (< 10% of PAR) in any recent session
+      const nearZeroCount = validStocks.filter(s => currentParLevel > 0 && s < currentParLevel * 0.1).length;
+      if (nearZeroCount >= 1 && dataPoints >= 2) riskType = "stockout";
+
+      // Overstock risk: stock consistently > 80% of PAR
+      const highStockCount = validStocks.filter(s => currentParLevel > 0 && s > currentParLevel * 0.8).length;
+      if (highStockCount >= Math.ceil(dataPoints * 0.75) && dataPoints >= 2) riskType = "overstock";
+
+      // Missing PAR
+      if (!parMap[itemKey] || currentParLevel <= 0) riskType = "missing_par";
+
+      // Compute suggested PAR
+      let suggestedPar: number;
+      const avgWeeklyUsage = weeklyUsages.length > 0
+        ? weeklyUsages.reduce((a, b) => a + b, 0) / weeklyUsages.length
+        : 0;
+
+      if (avgWeeklyUsage > 0) {
+        // suggested = avg_weekly_usage + (lead_time_days / 7) * avg_weekly_usage (buffer)
+        suggestedPar = roundToStep(avgWeeklyUsage * (1 + leadTimeNum / 7));
+      } else if (validStocks.length > 0) {
+        // Fallback: use average stock level
+        suggestedPar = roundToStep(validStocks.reduce((a, b) => a + b, 0) / validStocks.length);
+      } else {
+        continue;
+      }
+
+      // Adjust based on risk
+      if (riskType === "stockout") {
+        suggestedPar = roundToStep(suggestedPar * 1.2); // 20% bump
+      } else if (riskType === "overstock") {
+        suggestedPar = roundToStep(suggestedPar * 0.85); // 15% reduction
+      }
+
+      // Ensure minimum
+      if (suggestedPar < 0.1) suggestedPar = 0.1;
+
+      const changeAmt = suggestedPar - currentParLevel;
+      const changePct = currentParLevel > 0 ? (changeAmt / currentParLevel) * 100 : (suggestedPar > 0 ? 100 : 0);
+
+      // Only include if meaningful change OR missing PAR
+      if (riskType !== "missing_par" && Math.abs(changeAmt) < 0.5 && Math.abs(changePct) < 10) continue;
+
+      const fluctuating = isFluctuating(weeklyUsages);
+      const displayName = parItems?.find(p => p.item_name.trim().toLowerCase() === itemKey)?.item_name
+        || allSessionItems.find(si => si.item_name.trim().toLowerCase() === itemKey)?.item_name
+        || itemKey;
 
       result.push({
-        item_name: displayItem?.item_name || itemKey,
-        category: parData.category,
-        unit: parData.unit,
-        current_par: currentPar,
-        suggested_par: suggested,
+        item_name: displayName,
+        category: data.category || parMap[itemKey]?.category || null,
+        unit: data.unit || parMap[itemKey]?.unit || null,
+        current_par: currentParLevel,
+        suggested_par: suggestedPar,
         change_amount: changeAmt,
         change_pct: changePct,
-        avg_daily_usage: avgDaily,
-        reason: `Avg ${avgDaily.toFixed(2)}/day × (${coverageNum}d coverage + ${leadTimeNum}d lead time)`,
-        confidence: confidenceLevel(lookbackDays, usage.dataSource),
-        data_source: usage.dataSource,
+        reason: buildReason(riskType, changeAmt, avgWeeklyUsage, leadTimeNum),
+        confidence: computeConfidence(dataPoints),
+        is_fluctuating: fluctuating,
+        risk_type: riskType,
+        data_points: dataPoints,
+        weekly_usages: weeklyUsages,
       });
     }
 
-    // Sort by abs % change descending
     result.sort((a, b) => Math.abs(b.change_pct) - Math.abs(a.change_pct));
     setSuggestions(result);
     setGenerated(true);
     setLoading(false);
 
     if (result.length === 0) {
-      toast.info("No significant PAR changes suggested based on the current data.");
+      toast.info("No significant PAR changes suggested based on inventory history.");
     }
-  }, [currentRestaurant, selectedList, selectedGuide, lookback, coverageDays, leadTimeDays]);
+  }, [currentRestaurant, currentLocation, selectedList, selectedGuide, parSettings]);
 
-  // ─── Notify ──────────────────────────────────────────────────────────────
+  // ─── Filtered suggestions ───────────────────────────────────────────────
+  const filteredSuggestions = useMemo(() => {
+    switch (filterMode) {
+      case "changed": return suggestions.filter(s => Math.abs(s.change_pct) >= 10);
+      case "major": return suggestions.filter(s => Math.abs(s.change_pct) >= 20);
+      case "stockout": return suggestions.filter(s => s.risk_type === "stockout");
+      case "overstock": return suggestions.filter(s => s.risk_type === "overstock");
+      case "missing_par": return suggestions.filter(s => s.risk_type === "missing_par");
+      default: return suggestions;
+    }
+  }, [suggestions, filterMode]);
+
+  // ─── Apply to PAR Guide ─────────────────────────────────────────────────
+  const handleApplyToGuide = async () => {
+    if (!currentRestaurant || !user) return;
+    setApplying(true);
+
+    const itemsToApply = filteredSuggestions.filter(s => selectedItems.has(s.item_name));
+    if (itemsToApply.length === 0) {
+      toast.error("No items selected.");
+      setApplying(false);
+      return;
+    }
+
+    // Determine target guide
+    let targetGuideId = selectedGuide !== "all" ? selectedGuide : null;
+
+    if (!targetGuideId) {
+      // Find the first guide for this list
+      const listId = selectedList !== "all" ? selectedList : lists[0]?.id;
+      if (!listId) {
+        toast.error("Please select an inventory list first.");
+        setApplying(false);
+        return;
+      }
+      const { data: guides } = await supabase.from("par_guides")
+        .select("id").eq("restaurant_id", currentRestaurant.id).eq("inventory_list_id", listId).limit(1);
+      targetGuideId = guides?.[0]?.id;
+
+      if (!targetGuideId) {
+        // Create a new guide
+        const { data: newGuide, error } = await supabase.from("par_guides").insert({
+          restaurant_id: currentRestaurant.id,
+          inventory_list_id: listId,
+          name: `AI Suggested PAR – ${new Date().toLocaleDateString()}`,
+          created_by: user.id,
+        }).select("id").single();
+        if (error || !newGuide) {
+          toast.error("Failed to create PAR guide.");
+          setApplying(false);
+          return;
+        }
+        targetGuideId = newGuide.id;
+      }
+    }
+
+    // Update or insert par_guide_items
+    let updated = 0;
+    let created = 0;
+    for (const item of itemsToApply) {
+      const { data: existing } = await supabase.from("par_guide_items")
+        .select("id")
+        .eq("par_guide_id", targetGuideId)
+        .ilike("item_name", item.item_name)
+        .maybeSingle();
+
+      if (existing) {
+        await supabase.from("par_guide_items")
+          .update({ par_level: item.suggested_par })
+          .eq("id", existing.id);
+        updated++;
+      } else {
+        await supabase.from("par_guide_items").insert({
+          par_guide_id: targetGuideId,
+          item_name: item.item_name,
+          category: item.category,
+          unit: item.unit,
+          par_level: item.suggested_par,
+        });
+        created++;
+      }
+    }
+
+    toast.success(`Applied ${updated + created} PAR changes (${updated} updated, ${created} created).`);
+    setApplying(false);
+    setApplyDialogOpen(false);
+    setSelectedItems(new Set());
+  };
+
+  // ─── Notify with anti-spam ──────────────────────────────────────────────
   const handleNotify = async () => {
     if (!currentRestaurant || !user) return;
     setNotifying(true);
 
-    const selected = suggestions.filter(s => selectedItems.has(s.item_name));
-    const allSuggestions = selectedItems.size === 0 ? suggestions : selected;
-    const majorCount = allSuggestions.filter(s => Math.abs(s.change_pct) >= 20).length;
-    const severity: "WARNING" | "INFO" = majorCount > 0 ? "WARNING" : "INFO";
+    const fluctuatingCount = suggestions.filter(s => s.is_fluctuating).length;
+    const majorCount = suggestions.filter(s => Math.abs(s.change_pct) >= 20).length;
+    const totalChanges = suggestions.length;
 
-    // Find recipients: get notification preferences
+    // Check anti-spam: was a PAR_SUGGESTIONS notification sent today?
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const { data: recentNotifs } = await supabase
+      .from("notifications")
+      .select("id")
+      .eq("restaurant_id", currentRestaurant.id)
+      .eq("type", "PAR_SUGGESTIONS")
+      .gte("created_at", todayStart.toISOString())
+      .limit(1);
+
+    if (recentNotifs && recentNotifs.length > 0) {
+      toast.info("PAR suggestion notification already sent today. Skipping to prevent spam.");
+      setNotifying(false);
+      return;
+    }
+
+    // Check thresholds
+    if (fluctuatingCount < 3 && majorCount === 0 && totalChanges < 15) {
+      toast.info("No significant changes to notify about (need ≥3 fluctuating, any major change, or ≥15 total).");
+      setNotifying(false);
+      return;
+    }
+
+    // Get recipients
     const { data: prefs } = await supabase
       .from("notification_preferences")
       .select("*, restaurant_id")
       .eq("restaurant_id", currentRestaurant.id);
 
-    // Get members based on recipients_mode
     const { data: members } = await supabase
       .from("restaurant_members")
       .select("user_id, role")
       .eq("restaurant_id", currentRestaurant.id);
 
-    const recipientUserIds: string[] = [];
     const pref = prefs?.[0];
     const mode = pref?.recipients_mode ?? "OWNERS_MANAGERS";
     const inAppEnabled = pref?.channel_in_app ?? true;
@@ -259,30 +473,62 @@ export default function PARSuggestionsPage() {
       return;
     }
 
+    const recipientUserIds: string[] = [];
     if (mode === "ALL") {
-      (members || []).forEach(m => recipientUserIds.push(m.user_id));
+      // Still exclude STAFF for PAR notifications
+      (members || []).forEach(m => {
+        if (m.role === "OWNER" || m.role === "MANAGER") recipientUserIds.push(m.user_id);
+      });
+    } else if (mode === "CUSTOM") {
+      // Get custom recipients from alert_recipients
+      if (pref) {
+        const { data: customRecipients } = await supabase
+          .from("alert_recipients")
+          .select("user_id")
+          .eq("notification_pref_id", pref.id);
+        // Filter out STAFF
+        const staffIds = new Set((members || []).filter(m => m.role === "STAFF").map(m => m.user_id));
+        (customRecipients || []).forEach(cr => {
+          if (!staffIds.has(cr.user_id)) recipientUserIds.push(cr.user_id);
+        });
+      }
     } else {
-      // OWNERS_MANAGERS (default) or CUSTOM (fall back to owners/managers)
+      // OWNERS_MANAGERS (default)
       (members || []).forEach(m => {
         if (m.role === "OWNER" || m.role === "MANAGER") recipientUserIds.push(m.user_id);
       });
     }
 
-    const topItems = allSuggestions.slice(0, 5).map(s => s.item_name);
+    if (recipientUserIds.length === 0) {
+      toast.info("No eligible recipients found.");
+      setNotifying(false);
+      return;
+    }
+
+    const topItems = suggestions.slice(0, 5).map(s => s.item_name);
+    const severity: "WARNING" | "INFO" = majorCount > 0 || fluctuatingCount >= 3 ? "WARNING" : "INFO";
+
     const notifData = {
-      restaurant_id: currentRestaurant.id,
-      count_changed: allSuggestions.length,
-      count_major: majorCount,
-      top_items: topItems,
       list_id: selectedList !== "all" ? selectedList : null,
+      location_id: currentLocation?.id || null,
+      changed_count: totalChanges,
+      fluctuating_count: fluctuatingCount,
+      major_count: majorCount,
+      top_items: topItems,
     };
+
+    const message = `${totalChanges} item${totalChanges !== 1 ? "s" : ""} updated`
+      + (fluctuatingCount > 0 ? ` (${fluctuatingCount} fluctuating` : "")
+      + (fluctuatingCount > 0 && majorCount > 0 ? `, ${majorCount} major)` : fluctuatingCount > 0 ? ")" : "")
+      + (fluctuatingCount === 0 && majorCount > 0 ? ` (${majorCount} major)` : "")
+      + `. Review in PAR Suggestions.`;
 
     const notifications = recipientUserIds.map(uid => ({
       restaurant_id: currentRestaurant.id,
       user_id: uid,
       type: "PAR_SUGGESTIONS",
-      title: "PAR update suggestions ready",
-      message: `${allSuggestions.length} item${allSuggestions.length !== 1 ? "s" : ""} suggested${majorCount > 0 ? ` (${majorCount} major)` : ""}. Review in Reports → PAR Suggestions.`,
+      title: "PAR suggestions changed",
+      message,
       severity,
       data: notifData,
     }));
@@ -296,7 +542,7 @@ export default function PARSuggestionsPage() {
     setNotifying(false);
   };
 
-  // ─── Selection helpers ────────────────────────────────────────────────────
+  // ─── Selection helpers ──────────────────────────────────────────────────
   const toggleItem = (name: string) => {
     setSelectedItems(prev => {
       const next = new Set(prev);
@@ -307,18 +553,25 @@ export default function PARSuggestionsPage() {
   };
 
   const toggleAll = () => {
-    if (selectedItems.size === suggestions.length) {
+    if (selectedItems.size === filteredSuggestions.length) {
       setSelectedItems(new Set());
     } else {
-      setSelectedItems(new Set(suggestions.map(s => s.item_name)));
+      setSelectedItems(new Set(filteredSuggestions.map(s => s.item_name)));
     }
   };
 
-  // ─── Badges ──────────────────────────────────────────────────────────────
+  // ─── Badges ─────────────────────────────────────────────────────────────
   const confidenceBadge = (c: string) => {
     if (c === "high") return <Badge className="bg-success/15 text-success border-success/30 border text-[10px]">High</Badge>;
     if (c === "medium") return <Badge className="bg-warning/15 text-warning border-warning/30 border text-[10px]">Medium</Badge>;
     return <Badge className="bg-muted text-muted-foreground text-[10px]">Low</Badge>;
+  };
+
+  const riskBadge = (risk: string | null) => {
+    if (risk === "stockout") return <Badge className="bg-destructive/15 text-destructive border-destructive/30 border text-[10px]">Stockout Risk</Badge>;
+    if (risk === "overstock") return <Badge className="bg-warning/15 text-warning border-warning/30 border text-[10px]">Overstock</Badge>;
+    if (risk === "missing_par") return <Badge className="bg-primary/15 text-primary border-primary/30 border text-[10px]">Missing PAR</Badge>;
+    return null;
   };
 
   const changeIcon = (amt: number) => {
@@ -327,25 +580,39 @@ export default function PARSuggestionsPage() {
     return <Minus className="h-3.5 w-3.5 text-muted-foreground" />;
   };
 
-  // ─── Summary metrics ──────────────────────────────────────────────────────
+  // ─── Summary metrics ──────────────────────────────────────────────────
   const majorChanges = suggestions.filter(s => Math.abs(s.change_pct) >= 20);
-  const increases = suggestions.filter(s => s.change_amount > 0);
-  const decreases = suggestions.filter(s => s.change_amount < 0);
+  const stockoutRisks = suggestions.filter(s => s.risk_type === "stockout");
+  const overstockRisks = suggestions.filter(s => s.risk_type === "overstock");
+  const fluctuatingItems = suggestions.filter(s => s.is_fluctuating);
 
-  // ─── Render ───────────────────────────────────────────────────────────────
+  // ─── Filter tab buttons ────────────────────────────────────────────────
+  const filterOptions: { key: FilterMode; label: string; count: number; icon: any }[] = [
+    { key: "all", label: "All", count: suggestions.length, icon: ListFilter },
+    { key: "changed", label: "Changed", count: suggestions.filter(s => Math.abs(s.change_pct) >= 10).length, icon: TrendingUp },
+    { key: "major", label: "Major", count: majorChanges.length, icon: AlertTriangle },
+    { key: "stockout", label: "Stockout Risk", count: stockoutRisks.length, icon: PackageMinus },
+    { key: "overstock", label: "Overstock", count: overstockRisks.length, icon: PackageCheck },
+    { key: "missing_par", label: "Missing PAR", count: suggestions.filter(s => s.risk_type === "missing_par").length, icon: Sparkles },
+  ];
+
+  // ─── Render ─────────────────────────────────────────────────────────────
   return (
     <div className="space-y-5 animate-fade-in">
       <div className="page-header">
         <div>
-          <h1 className="page-title">PAR Suggestions</h1>
-          <p className="page-description">AI-powered PAR level recommendations based on actual usage data</p>
+          <h1 className="page-title flex items-center gap-2">
+            <Sparkles className="h-5 w-5 text-primary" />
+            PAR AI Suggestions
+          </h1>
+          <p className="page-description">AI-powered PAR level recommendations based on approved inventory history</p>
         </div>
       </div>
 
       {/* Filters */}
       <Card>
         <CardContent className="p-5">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-1.5">
               <Label className="text-xs">Inventory List</Label>
               <Select value={selectedList} onValueChange={setSelectedList}>
@@ -366,68 +633,21 @@ export default function PARSuggestionsPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs">Lookback Window</Label>
-              <Select value={lookback} onValueChange={setLookback}>
-                <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="7">Last 7 days</SelectItem>
-                  <SelectItem value="14">Last 14 days</SelectItem>
-                  <SelectItem value="30">Last 30 days</SelectItem>
-                  <SelectItem value="60">Last 60 days</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs">Coverage Days</Label>
-              <Select value={coverageDays} onValueChange={setCoverageDays}>
-                <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="3">3 days</SelectItem>
-                  <SelectItem value="5">5 days</SelectItem>
-                  <SelectItem value="7">7 days</SelectItem>
-                  <SelectItem value="14">14 days</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs">Lead Time (days)</Label>
-              <Select value={leadTimeDays} onValueChange={setLeadTimeDays}>
-                <SelectTrigger className="h-9 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="0">0 days</SelectItem>
-                  <SelectItem value="1">1 day</SelectItem>
-                  <SelectItem value="2">2 days</SelectItem>
-                  <SelectItem value="3">3 days</SelectItem>
-                  <SelectItem value="5">5 days</SelectItem>
-                  <SelectItem value="7">7 days</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div className="mt-4 flex gap-2">
-            <Button
-              onClick={generateSuggestions}
-              disabled={loading}
-              className="bg-gradient-amber shadow-amber gap-2"
-              size="sm"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-              {loading ? "Generating…" : "Generate Suggestions"}
-            </Button>
-            {generated && suggestions.length > 0 && isManagerPlus && (
+            <div className="flex items-end">
               <Button
-                onClick={handleNotify}
-                disabled={notifying}
-                variant="outline"
+                onClick={generateSuggestions}
+                disabled={loading}
+                className="bg-gradient-amber shadow-amber gap-2 w-full sm:w-auto"
                 size="sm"
-                className="gap-2"
               >
-                <BellRing className="h-3.5 w-3.5" />
-                {notifying ? "Notifying…" : `Notify (${selectedItems.size > 0 ? selectedItems.size : suggestions.length})`}
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+                {loading ? "Analyzing…" : "Generate AI Suggestions"}
               </Button>
-            )}
+            </div>
           </div>
+          <p className="text-[11px] text-muted-foreground mt-3">
+            Uses last 4 approved inventory sessions · Lead time: {parSettings?.default_lead_time_days ?? 2}d (from PAR settings)
+          </p>
         </CardContent>
       </Card>
 
@@ -441,109 +661,196 @@ export default function PARSuggestionsPage() {
       {/* Summary KPIs */}
       {generated && suggestions.length > 0 && !loading && (
         <>
-          <div className="grid gap-3 sm:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <Card>
               <CardContent className="flex items-center gap-3 p-4">
                 <BarChart3 className="h-5 w-5 text-primary" />
                 <div>
                   <p className="text-lg font-bold leading-tight">{suggestions.length}</p>
-                  <p className="text-[11px] text-muted-foreground">Suggested Changes</p>
+                  <p className="text-[11px] text-muted-foreground">Total Suggestions</p>
                 </div>
               </CardContent>
             </Card>
             <Card className="border-destructive/15">
               <CardContent className="flex items-center gap-3 p-4">
-                <TrendingUp className="h-5 w-5 text-destructive" />
+                <AlertTriangle className="h-5 w-5 text-destructive" />
                 <div>
                   <p className="text-lg font-bold leading-tight text-destructive">{majorChanges.length}</p>
-                  <p className="text-[11px] text-muted-foreground">Major Changes (≥20%)</p>
+                  <p className="text-[11px] text-muted-foreground">Major (≥20%)</p>
                 </div>
               </CardContent>
             </Card>
-            <Card className="border-success/15">
+            <Card className="border-destructive/15">
               <CardContent className="flex items-center gap-3 p-4">
-                <TrendingUp className="h-5 w-5 text-success" />
+                <PackageMinus className="h-5 w-5 text-destructive" />
                 <div>
-                  <p className="text-lg font-bold leading-tight text-success">{increases.length}</p>
-                  <p className="text-[11px] text-muted-foreground">PAR Increases</p>
+                  <p className="text-lg font-bold leading-tight text-destructive">{stockoutRisks.length}</p>
+                  <p className="text-[11px] text-muted-foreground">Stockout Risk</p>
                 </div>
               </CardContent>
             </Card>
-            <Card>
+            <Card className="border-warning/15">
               <CardContent className="flex items-center gap-3 p-4">
-                <TrendingDown className="h-5 w-5 text-muted-foreground" />
+                <PackageCheck className="h-5 w-5 text-warning" />
                 <div>
-                  <p className="text-lg font-bold leading-tight">{decreases.length}</p>
-                  <p className="text-[11px] text-muted-foreground">PAR Decreases</p>
+                  <p className="text-lg font-bold leading-tight text-warning">{overstockRisks.length}</p>
+                  <p className="text-[11px] text-muted-foreground">Overstock Risk</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className={fluctuatingItems.length > 0 ? "border-warning/15" : ""}>
+              <CardContent className="flex items-center gap-3 p-4">
+                <Sparkles className={`h-5 w-5 ${fluctuatingItems.length > 0 ? "text-warning" : "text-muted-foreground"}`} />
+                <div>
+                  <p className="text-lg font-bold leading-tight">{fluctuatingItems.length}</p>
+                  <p className="text-[11px] text-muted-foreground">Fluctuating</p>
                 </div>
               </CardContent>
             </Card>
           </div>
 
+          {/* Filter tabs */}
+          <div className="flex flex-wrap gap-2">
+            {filterOptions.map(f => (
+              <Button
+                key={f.key}
+                variant={filterMode === f.key ? "default" : "outline"}
+                size="sm"
+                className="text-xs gap-1.5 h-8"
+                onClick={() => setFilterMode(f.key)}
+              >
+                <f.icon className="h-3 w-3" />
+                {f.label}
+                {f.count > 0 && <Badge variant="secondary" className="text-[10px] ml-1 px-1.5 py-0">{f.count}</Badge>}
+              </Button>
+            ))}
+          </div>
+
+          {/* Action bar */}
+          {isManagerPlus && (
+            <div className="flex gap-2 flex-wrap">
+              <Button
+                onClick={() => setApplyDialogOpen(true)}
+                disabled={selectedItems.size === 0}
+                size="sm"
+                className="gap-2 text-xs"
+              >
+                <CheckSquare className="h-3.5 w-3.5" />
+                Apply Selected to PAR Guide ({selectedItems.size})
+              </Button>
+              <Button
+                onClick={handleNotify}
+                disabled={notifying}
+                variant="outline"
+                size="sm"
+                className="gap-2 text-xs"
+              >
+                <BellRing className="h-3.5 w-3.5" />
+                {notifying ? "Notifying…" : "Notify Team"}
+              </Button>
+            </div>
+          )}
+
           {/* Suggestions table */}
           <Card className="overflow-hidden">
             <CardHeader className="pb-2 flex flex-row items-center justify-between">
               <CardTitle className="text-sm flex items-center gap-2">
-                <TrendingUp className="h-4 w-4 text-primary" />
-                Suggested PAR Changes
+                <Sparkles className="h-4 w-4 text-primary" />
+                AI PAR Recommendations
+                <Badge variant="secondary" className="text-[10px]">{filteredSuggestions.length} items</Badge>
               </CardTitle>
-              {isManagerPlus && (
-                <span className="text-[11px] text-muted-foreground">
-                  {selectedItems.size > 0 ? `${selectedItems.size} selected` : "Select items to notify selectively"}
-                </span>
+              {isManagerPlus && selectedItems.size > 0 && (
+                <span className="text-[11px] text-muted-foreground">{selectedItems.size} selected</span>
               )}
             </CardHeader>
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/30">
-                  {isManagerPlus && (
-                    <TableHead className="w-10">
-                      <Checkbox
-                        checked={selectedItems.size === suggestions.length && suggestions.length > 0}
-                        onCheckedChange={toggleAll}
-                        aria-label="Select all"
-                      />
-                    </TableHead>
-                  )}
-                  <TableHead className="text-xs font-semibold">Item</TableHead>
-                  <TableHead className="text-xs font-semibold">Category</TableHead>
-                  <TableHead className="text-xs font-semibold text-right">Current PAR</TableHead>
-                  <TableHead className="text-xs font-semibold text-right">Suggested PAR</TableHead>
-                  <TableHead className="text-xs font-semibold text-center">Change</TableHead>
-                  <TableHead className="text-xs font-semibold text-center">Confidence</TableHead>
-                  <TableHead className="text-xs font-semibold hidden md:table-cell">Reason</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {suggestions.map((s) => (
-                  <TableRow key={s.item_name} className={`hover:bg-muted/20 transition-colors ${Math.abs(s.change_pct) >= 20 ? "bg-warning/5" : ""}`}>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="bg-muted/30">
                     {isManagerPlus && (
-                      <TableCell>
+                      <TableHead className="w-10">
                         <Checkbox
-                          checked={selectedItems.has(s.item_name)}
-                          onCheckedChange={() => toggleItem(s.item_name)}
-                          aria-label={`Select ${s.item_name}`}
+                          checked={selectedItems.size === filteredSuggestions.length && filteredSuggestions.length > 0}
+                          onCheckedChange={toggleAll}
+                          aria-label="Select all"
                         />
-                      </TableCell>
+                      </TableHead>
                     )}
-                    <TableCell className="font-medium text-sm">{s.item_name}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{s.category || "—"}</TableCell>
-                    <TableCell className="text-right font-mono text-sm text-muted-foreground">{s.current_par}</TableCell>
-                    <TableCell className="text-right font-mono text-sm font-semibold">{s.suggested_par.toFixed(1)}</TableCell>
-                    <TableCell className="text-center">
-                      <div className="flex items-center justify-center gap-1">
-                        {changeIcon(s.change_amount)}
-                        <span className={`text-xs font-medium ${s.change_amount > 0 ? "text-success" : s.change_amount < 0 ? "text-destructive" : "text-muted-foreground"}`}>
-                          {s.change_amount > 0 ? "+" : ""}{s.change_amount.toFixed(1)} ({s.change_pct.toFixed(0)}%)
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-center">{confidenceBadge(s.confidence)}</TableCell>
-                    <TableCell className="text-[11px] text-muted-foreground hidden md:table-cell max-w-xs truncate">{s.reason}</TableCell>
+                    <TableHead className="text-xs font-semibold">Item</TableHead>
+                    <TableHead className="text-xs font-semibold">Category</TableHead>
+                    <TableHead className="text-xs font-semibold text-right">Active PAR</TableHead>
+                    <TableHead className="text-xs font-semibold text-right">Suggested</TableHead>
+                    <TableHead className="text-xs font-semibold text-center">Change</TableHead>
+                    <TableHead className="text-xs font-semibold text-center">Risk</TableHead>
+                    <TableHead className="text-xs font-semibold text-center">Confidence</TableHead>
+                    <TableHead className="text-xs font-semibold hidden lg:table-cell">Reason</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {filteredSuggestions.map((s) => (
+                    <TableRow
+                      key={s.item_name}
+                      className={`hover:bg-muted/20 transition-colors ${
+                        Math.abs(s.change_pct) >= 20 ? "bg-warning/5" : ""
+                      } ${s.risk_type === "stockout" ? "bg-destructive/5" : ""}`}
+                    >
+                      {isManagerPlus && (
+                        <TableCell>
+                          <Checkbox
+                            checked={selectedItems.has(s.item_name)}
+                            onCheckedChange={() => toggleItem(s.item_name)}
+                            aria-label={`Select ${s.item_name}`}
+                          />
+                        </TableCell>
+                      )}
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-sm">{s.item_name}</span>
+                          {s.is_fluctuating && (
+                            <Badge className="bg-warning/15 text-warning border-warning/30 border text-[9px] px-1.5">
+                              Fluctuating
+                            </Badge>
+                          )}
+                        </div>
+                        {s.unit && <span className="text-[10px] text-muted-foreground">{s.unit}</span>}
+                      </TableCell>
+                      <TableCell className="text-xs text-muted-foreground">{s.category || "—"}</TableCell>
+                      <TableCell className="text-right font-mono text-sm text-muted-foreground">
+                        {s.current_par > 0 ? s.current_par : "—"}
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-sm font-semibold">{s.suggested_par.toFixed(1)}</TableCell>
+                      <TableCell className="text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          {changeIcon(s.change_amount)}
+                          <span className={`text-xs font-medium ${
+                            s.change_amount > 0 ? "text-success" : s.change_amount < 0 ? "text-destructive" : "text-muted-foreground"
+                          }`}>
+                            {s.change_amount > 0 ? "+" : ""}{s.change_amount.toFixed(1)}
+                            {s.current_par > 0 ? ` (${s.change_pct.toFixed(0)}%)` : ""}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <div className="flex flex-col items-center gap-0.5">
+                          {riskBadge(s.risk_type)}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-center">{confidenceBadge(s.confidence)}</TableCell>
+                      <TableCell className="text-[11px] text-muted-foreground hidden lg:table-cell max-w-xs">
+                        {s.reason}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {filteredSuggestions.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={9} className="text-center text-sm text-muted-foreground py-8">
+                        No items match this filter.
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </Card>
         </>
       )}
@@ -555,7 +862,7 @@ export default function PARSuggestionsPage() {
             <BarChart3 className="empty-state-icon" />
             <p className="empty-state-title">No significant PAR changes suggested</p>
             <p className="empty-state-description">
-              Current PAR levels appear to be aligned with usage data. Try adjusting the lookback window or coverage days.
+              Current PAR levels appear aligned with inventory history. Ensure you have at least 2 approved sessions for better analysis.
             </p>
           </CardContent>
         </Card>
@@ -565,14 +872,55 @@ export default function PARSuggestionsPage() {
       {!generated && !loading && (
         <Card>
           <CardContent className="empty-state py-16">
-            <TrendingUp className="empty-state-icon" />
-            <p className="empty-state-title">Generate PAR Suggestions</p>
+            <Sparkles className="empty-state-icon" />
+            <p className="empty-state-title">Generate PAR AI Suggestions</p>
             <p className="empty-state-description">
-              Select your filters and click "Generate Suggestions" to analyze usage data and recommend PAR level changes.
+              Select your inventory list and click "Generate AI Suggestions" to analyze your last 4 approved counts and recommend optimal PAR levels.
             </p>
           </CardContent>
         </Card>
       )}
+
+      {/* Apply Confirmation Dialog */}
+      <Dialog open={applyDialogOpen} onOpenChange={setApplyDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Apply PAR Changes</DialogTitle>
+            <DialogDescription>
+              This will update {selectedItems.size} PAR level{selectedItems.size !== 1 ? "s" : ""} in the{" "}
+              {selectedGuide !== "all" ? "selected" : "first available"} PAR guide
+              {selectedGuide === "all" && selectedList === "all" ? " (a new guide will be created if needed)" : ""}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-48 overflow-y-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="text-xs">Item</TableHead>
+                  <TableHead className="text-xs text-right">Current</TableHead>
+                  <TableHead className="text-xs text-right">New</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {filteredSuggestions.filter(s => selectedItems.has(s.item_name)).map(s => (
+                  <TableRow key={s.item_name}>
+                    <TableCell className="text-sm">{s.item_name}</TableCell>
+                    <TableCell className="text-right text-sm text-muted-foreground">{s.current_par > 0 ? s.current_par : "—"}</TableCell>
+                    <TableCell className="text-right text-sm font-semibold">{s.suggested_par.toFixed(1)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setApplyDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleApplyToGuide} disabled={applying} className="gap-2">
+              <CheckSquare className="h-3.5 w-3.5" />
+              {applying ? "Applying…" : "Confirm & Apply"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
