@@ -34,7 +34,7 @@ import {
   Search, ArrowLeft, AlertTriangle, ShoppingCart, ChevronRight,
   GripVertical, Copy, LayoutList, FolderPlus, Check, X,
   Package, FolderOpen, ClipboardList, Menu, Sparkles, User, Clock,
-  ChevronDown, MoveRight,
+  ChevronDown, MoveRight, Settings,
 } from "lucide-react";
 import { DragDropContext, Droppable, Draggable, DropResult } from "@hello-pangea/dnd";
 import { exportToCSV, exportToExcel, exportToPDF, parseFile } from "@/lib/export-utils";
@@ -272,6 +272,16 @@ export default function ListManagementPage() {
   // ── Auto-save
   const [saveStatus, setSaveStatus] = useState<"saved" | "saving" | "idle">("idle");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Collapsible categories
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+  const toggleCategoryCollapse = (catName: string) => {
+    setCollapsedCategories(prev => {
+      const next = new Set(prev);
+      if (next.has(catName)) next.delete(catName); else next.add(catName);
+      return next;
+    });
+  };
 
   const requiredMapFields = ["item_name", "unit", "pack_size"];
   const optionalMapFields = ["vendor_sku", "default_unit_cost"];
@@ -583,6 +593,25 @@ export default function ListManagementPage() {
     const { error } = await supabase.from("inventory_catalog_items").delete().eq("id", itemId);
     if (error) toast.error(error.message);
     else openListDetail(selectedList);
+  };
+
+  const handleDuplicateItem = async (item: CatalogItem) => {
+    if (!selectedList || !restaurantId) return;
+    const maxOrder = catalogItems.length > 0 ? Math.max(...catalogItems.map(i => i.sort_order || 0)) + 1 : 0;
+    const { error } = await supabase.from("inventory_catalog_items").insert({
+      restaurant_id: restaurantId,
+      inventory_list_id: selectedList.id,
+      item_name: `${item.item_name} (Copy)`,
+      category: item.category,
+      unit: item.unit,
+      pack_size: item.pack_size,
+      vendor_sku: item.vendor_sku,
+      vendor_name: item.vendor_name,
+      default_unit_cost: item.default_unit_cost,
+      sort_order: maxOrder,
+    });
+    if (error) toast.error(error.message);
+    else { toast.success("Item duplicated"); openListDetail(selectedList); }
   };
 
   // ─── UPDATE ACTIVE CATEGORY MODE ─────────────
@@ -1212,26 +1241,31 @@ export default function ListManagementPage() {
         </Breadcrumb>
 
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSelectedList(null)}>
+        <div className="flex items-center justify-between gap-4 pb-2">
+          <div className="flex items-center gap-4">
+            <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" onClick={() => setSelectedList(null)}>
               <ArrowLeft className="h-4 w-4" />
             </Button>
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-amber text-primary-foreground font-bold text-lg">
+              {selectedList.name.charAt(0).toUpperCase()}
+            </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight">{selectedList.name}</h1>
-              <p className="text-xs text-muted-foreground">{catalogItems.length} items • Updated {new Date(selectedList.created_at).toLocaleDateString()}</p>
+              <p className="text-sm text-muted-foreground">
+                {catalogItems.length} items • Updated {new Date(selectedList.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+              </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             {saveStatus === "saving" && <span className="text-xs text-muted-foreground animate-pulse">Saving...</span>}
             {saveStatus === "saved" && <span className="text-xs text-success flex items-center gap-1"><Check className="h-3 w-3" /> Saved</span>}
 
-            <Button variant="outline" size="sm" className="gap-1.5" onClick={() => { setImportTargetList(selectedList.id); setImportOpen(true); }}>
+            <Button variant="outline" size="sm" className="gap-1.5 h-9" onClick={() => { setImportTargetList(selectedList.id); setImportOpen(true); }}>
               <Upload className="h-3.5 w-3.5" /> Import
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="gap-1.5"><Download className="h-3.5 w-3.5" /> Export</Button>
+                <Button variant="outline" size="sm" className="gap-1.5 h-9"><Download className="h-3.5 w-3.5" /> Export</Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent>
                 <DropdownMenuItem onClick={() => handleExportList(selectedList, "csv")}>CSV</DropdownMenuItem>
@@ -1242,7 +1276,7 @@ export default function ListManagementPage() {
             {/* Manage List Menu */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="gap-1.5"><MoreVertical className="h-3.5 w-3.5" /> Manage list</Button>
+                <Button variant="outline" size="sm" className="gap-1.5 h-9"><Settings className="h-3.5 w-3.5" /> Manage list</Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={() => { setRenameListId(selectedList.id); setRenameValue(selectedList.name); setRenameOpen(true); }}>
@@ -1290,73 +1324,75 @@ export default function ListManagementPage() {
           {/* ── ITEMS TAB ── */}
           <TabsContent value="items" className="space-y-4">
             {/* Toolbar */}
-            <div className="flex items-center gap-3 flex-wrap">
-              <div className="relative flex-1 max-w-sm">
+            <div className="flex items-center gap-4 flex-wrap">
+              <div className="relative min-w-[240px] max-w-md flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input value={detailSearch} onChange={e => setDetailSearch(e.target.value)} placeholder="Search items..." className="pl-9 h-9" />
+                <Input value={detailSearch} onChange={e => setDetailSearch(e.target.value)} placeholder="Search items..." className="pl-10 h-10" />
               </div>
 
-              {/* 3-Line View Mode Menu */}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="gap-2 h-9">
-                    <Menu className="h-3.5 w-3.5" />
-                    {viewModeLabel[viewMode]}
-                    <ChevronDown className="h-3 w-3 opacity-50" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-56">
-                  <DropdownMenuItem onClick={() => { setViewMode("list-order"); updateActiveCategoryMode("list-order"); setSelectedItems(new Set()); }} className="gap-2">
-                    <LayoutList className="h-4 w-4" /> List Order
-                    {viewMode === "list-order" && <Check className="h-3.5 w-3.5 ml-auto" />}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => { setViewMode("custom-categories"); updateActiveCategoryMode("custom-categories"); setSelectedItems(new Set()); }} className="gap-2">
-                    <Sparkles className="h-4 w-4" /> Custom Categories
-                    {viewMode === "custom-categories" && <Check className="h-3.5 w-3.5 ml-auto" />}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => { setViewMode("my-categories"); updateActiveCategoryMode("my-categories"); setSelectedItems(new Set()); }} className="gap-2">
-                    <User className="h-4 w-4" /> My Categories
-                    {viewMode === "my-categories" && <Check className="h-3.5 w-3.5 ml-auto" />}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={() => { setViewMode("recently-purchased"); updateActiveCategoryMode("recently-purchased"); setSelectedItems(new Set()); }} className="gap-2">
-                    <Clock className="h-4 w-4" /> Recently Purchased
-                    {viewMode === "recently-purchased" && <Check className="h-3.5 w-3.5 ml-auto" />}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <div className="flex items-center gap-3 ml-auto">
+                {/* View Mode Menu */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" className="gap-2 h-10">
+                      <Menu className="h-3.5 w-3.5" />
+                      {viewModeLabel[viewMode]}
+                      <ChevronDown className="h-3 w-3 opacity-50" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-56">
+                    <DropdownMenuItem onClick={() => { setViewMode("list-order"); updateActiveCategoryMode("list-order"); setSelectedItems(new Set()); }} className="gap-2">
+                      <LayoutList className="h-4 w-4" /> List Order
+                      {viewMode === "list-order" && <Check className="h-3.5 w-3.5 ml-auto" />}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => { setViewMode("custom-categories"); updateActiveCategoryMode("custom-categories"); setSelectedItems(new Set()); }} className="gap-2">
+                      <Sparkles className="h-4 w-4" /> Custom Categories
+                      {viewMode === "custom-categories" && <Check className="h-3.5 w-3.5 ml-auto" />}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => { setViewMode("my-categories"); updateActiveCategoryMode("my-categories"); setSelectedItems(new Set()); }} className="gap-2">
+                      <User className="h-4 w-4" /> My Categories
+                      {viewMode === "my-categories" && <Check className="h-3.5 w-3.5 ml-auto" />}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => { setViewMode("recently-purchased"); updateActiveCategoryMode("recently-purchased"); setSelectedItems(new Set()); }} className="gap-2">
+                      <Clock className="h-4 w-4" /> Recently Purchased
+                      {viewMode === "recently-purchased" && <Check className="h-3.5 w-3.5 ml-auto" />}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
 
-              <Dialog open={addItemOpen} onOpenChange={setAddItemOpen}>
-                <DialogTrigger asChild>
-                  <Button size="sm" className="bg-gradient-amber gap-1.5"><Plus className="h-3.5 w-3.5" /> Add Item</Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader><DialogTitle>Add Item</DialogTitle></DialogHeader>
-                  <div className="space-y-3">
-                    <div className="space-y-1"><Label className="text-xs">Item Name *</Label><Input value={newItem.item_name} onChange={e => setNewItem({ ...newItem, item_name: e.target.value })} /></div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1"><Label className="text-xs">Unit *</Label><Input value={newItem.unit} onChange={e => setNewItem({ ...newItem, unit: e.target.value })} placeholder="e.g. lbs, each" /></div>
-                      <div className="space-y-1"><Label className="text-xs">Pack Size *</Label><Input value={newItem.pack_size} onChange={e => setNewItem({ ...newItem, pack_size: e.target.value })} placeholder="e.g. 12 oz" /></div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1"><Label className="text-xs">Category</Label>
-                        <Select value={newItem.category} onValueChange={v => setNewItem({ ...newItem, category: v })}>
-                          <SelectTrigger className="h-9"><SelectValue placeholder="Select..." /></SelectTrigger>
-                          <SelectContent>
-                            {currentCats.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
+                <Dialog open={addItemOpen} onOpenChange={setAddItemOpen}>
+                  <DialogTrigger asChild>
+                    <Button className="bg-gradient-amber gap-1.5 h-10 px-5"><Plus className="h-4 w-4" /> Add Item</Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader><DialogTitle>Add Item</DialogTitle></DialogHeader>
+                    <div className="space-y-3">
+                      <div className="space-y-1"><Label className="text-xs">Item Name *</Label><Input value={newItem.item_name} onChange={e => setNewItem({ ...newItem, item_name: e.target.value })} /></div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1"><Label className="text-xs">Unit *</Label><Input value={newItem.unit} onChange={e => setNewItem({ ...newItem, unit: e.target.value })} placeholder="e.g. lbs, each" /></div>
+                        <div className="space-y-1"><Label className="text-xs">Pack Size *</Label><Input value={newItem.pack_size} onChange={e => setNewItem({ ...newItem, pack_size: e.target.value })} placeholder="e.g. 12 oz" /></div>
                       </div>
-                      <div className="space-y-1"><Label className="text-xs">Product Number</Label><Input value={newItem.vendor_sku} onChange={e => setNewItem({ ...newItem, vendor_sku: e.target.value })} placeholder="Vendor item number used for ordering" /></div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1"><Label className="text-xs">Category</Label>
+                          <Select value={newItem.category} onValueChange={v => setNewItem({ ...newItem, category: v })}>
+                            <SelectTrigger className="h-9"><SelectValue placeholder="Select..." /></SelectTrigger>
+                            <SelectContent>
+                              {currentCats.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-1"><Label className="text-xs">Product Number</Label><Input value={newItem.vendor_sku} onChange={e => setNewItem({ ...newItem, vendor_sku: e.target.value })} placeholder="Vendor item number used for ordering" /></div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1"><Label className="text-xs">Vendor Name</Label><Input value={newItem.vendor_name} onChange={e => setNewItem({ ...newItem, vendor_name: e.target.value })} placeholder="e.g. Sysco, US Foods" /></div>
+                        <div className="space-y-1"><Label className="text-xs">Unit Cost</Label><Input type="number" step="0.01" value={newItem.default_unit_cost || ""} onChange={e => setNewItem({ ...newItem, default_unit_cost: parseFloat(e.target.value) || 0 })} /></div>
+                      </div>
+                      <Button onClick={handleAddItemToList} className="w-full bg-gradient-amber" disabled={!newItem.item_name || !newItem.unit || !newItem.pack_size}>Add Item</Button>
                     </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1"><Label className="text-xs">Vendor Name</Label><Input value={newItem.vendor_name} onChange={e => setNewItem({ ...newItem, vendor_name: e.target.value })} placeholder="e.g. Sysco, US Foods" /></div>
-                      <div className="space-y-1"><Label className="text-xs">Unit Cost</Label><Input type="number" step="0.01" value={newItem.default_unit_cost || ""} onChange={e => setNewItem({ ...newItem, default_unit_cost: parseFloat(e.target.value) || 0 })} /></div>
-                    </div>
-                    <Button onClick={handleAddItemToList} className="w-full bg-gradient-amber" disabled={!newItem.item_name || !newItem.unit || !newItem.pack_size}>Add Item</Button>
-                  </div>
-                </DialogContent>
-              </Dialog>
+                  </DialogContent>
+                </Dialog>
+              </div>
             </div>
 
             {/* Bulk action bar */}
@@ -1423,29 +1459,50 @@ export default function ListManagementPage() {
             {/* Items Table with Groups */}
             <DragDropContext onDragEnd={handleDragEnd}>
               {filteredItems.length === 0 ? (
-                <Card>
-                  <CardContent className="py-12 text-center text-muted-foreground">
-                    <FolderOpen className="mx-auto h-10 w-10 mb-3 opacity-20" />
-                    <p className="text-sm">No items found. Add items or import from a file.</p>
-                  </CardContent>
-                </Card>
+                <div className="border rounded-lg py-16 text-center text-muted-foreground">
+                  <FolderOpen className="mx-auto h-12 w-12 mb-4 opacity-20" />
+                  <p className="text-sm font-medium">No items found</p>
+                  <p className="text-xs mt-1 mb-4">Add items or import from a file to get started.</p>
+                  <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setAddItemOpen(true)}>
+                    <Plus className="h-3.5 w-3.5" /> Add Item
+                  </Button>
+                </div>
               ) : (
-                Object.entries(grouped).map(([catName, catItems]) => (
-                  <div key={catName} className="space-y-2">
+                <div className="space-y-4">
+                {Object.entries(grouped).map(([catName, catItems]) => (
+                  <div key={catName} className="rounded-lg border overflow-hidden">
+                    {/* Category header */}
                     {Object.keys(grouped).length > 1 && (
-                      <div className="flex items-center gap-2 px-1">
-                        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{catName}</h3>
-                        <Badge variant="secondary" className="text-[10px]">{catItems.length}</Badge>
-                      </div>
+                      <button
+                        type="button"
+                        className="flex items-center justify-between w-full px-4 py-3 bg-muted/40 hover:bg-muted/60 transition-colors"
+                        onClick={() => toggleCategoryCollapse(catName)}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <h3 className="text-xs font-bold uppercase tracking-wider text-foreground">{catName}</h3>
+                          <Badge variant="secondary" className="text-[10px] font-mono">{catItems.length}</Badge>
+                        </div>
+                        <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${collapsedCategories.has(catName) ? "-rotate-90" : ""}`} />
+                      </button>
                     )}
-                    <Card className="overflow-hidden border shadow-sm">
+
+                    {/* Category content */}
+                    {!collapsedCategories.has(catName) && (
+                      catItems.length === 0 ? (
+                        <div className="py-10 text-center text-muted-foreground">
+                          <p className="text-sm">No items in this category</p>
+                          <Button variant="ghost" size="sm" className="mt-2 gap-1 text-xs" onClick={() => setAddItemOpen(true)}>
+                            <Plus className="h-3 w-3" /> Add Item
+                          </Button>
+                        </div>
+                      ) : (
                       <Table>
                         <TableHeader>
-                          <TableRow className="bg-muted/30">
+                          <TableRow className="bg-muted/20 border-b border-border/40">
                             {(viewMode === "my-categories" || viewMode === "custom-categories") && (
                               <TableHead className="w-10">
                                 <Checkbox
-                                  checked={catItems.every(i => selectedItems.has(i.id))}
+                                  checked={catItems.length > 0 && catItems.every(i => selectedItems.has(i.id))}
                                   onCheckedChange={() => {
                                     const allSelected = catItems.every(i => selectedItems.has(i.id));
                                     setSelectedItems(prev => {
@@ -1457,14 +1514,13 @@ export default function ListManagementPage() {
                                 />
                               </TableHead>
                             )}
-                            {reorderMode && <TableHead className="w-10"></TableHead>}
-                            <TableHead className="text-xs font-semibold w-12">Sr#</TableHead>
+                            <TableHead className="w-8"></TableHead>
                             <TableHead className="text-xs font-semibold">Item Name</TableHead>
                             <TableHead className="text-xs font-semibold">Unit</TableHead>
                             <TableHead className="text-xs font-semibold">Pack Size</TableHead>
                             <TableHead className="text-xs font-semibold">Product #</TableHead>
-                            <TableHead className="text-xs font-semibold">Unit Cost</TableHead>
-                            <TableHead className="text-xs font-semibold w-20">Actions</TableHead>
+                            <TableHead className="text-xs font-semibold text-right">Unit Cost</TableHead>
+                            <TableHead className="text-xs font-semibold w-24">Actions</TableHead>
                           </TableRow>
                         </TableHeader>
                         <Droppable droppableId={catName}>
@@ -1476,13 +1532,12 @@ export default function ListManagementPage() {
                                     <TableRow
                                       ref={dragProvided.innerRef}
                                       {...dragProvided.draggableProps}
-                                      className={`hover:bg-muted/20 transition-colors ${snapshot.isDragging ? "bg-accent shadow-md" : ""} ${selectedItems.has(item.id) ? "bg-primary/5" : ""}`}
+                                      className={`group/row border-b border-border/40 transition-colors ${snapshot.isDragging ? "bg-accent shadow-md" : "hover:bg-muted/30"} ${selectedItems.has(item.id) ? "bg-primary/5" : ""}`}
                                     >
                                       {editingItem === item.id ? (
                                         <>
                                           {(viewMode === "my-categories" || viewMode === "custom-categories") && <TableCell />}
-                                          {reorderMode && <TableCell><div {...dragProvided.dragHandleProps}><GripVertical className="h-4 w-4 text-muted-foreground" /></div></TableCell>}
-                                          <TableCell className="text-xs text-muted-foreground">{idx + 1}</TableCell>
+                                          <TableCell><div {...dragProvided.dragHandleProps}><GripVertical className="h-4 w-4 text-muted-foreground/30" /></div></TableCell>
                                           <TableCell><Input className="h-8 text-sm" value={editValues.item_name} onChange={e => setEditValues({ ...editValues, item_name: e.target.value })} /></TableCell>
                                           <TableCell><Input className="h-8 text-sm" value={editValues.unit || ""} onChange={e => setEditValues({ ...editValues, unit: e.target.value })} /></TableCell>
                                           <TableCell><Input className="h-8 text-sm" value={editValues.pack_size || ""} onChange={e => setEditValues({ ...editValues, pack_size: e.target.value })} /></TableCell>
@@ -1505,20 +1560,23 @@ export default function ListManagementPage() {
                                               />
                                             </TableCell>
                                           )}
-                                          {reorderMode && <TableCell><div {...dragProvided.dragHandleProps} className="cursor-grab active:cursor-grabbing"><GripVertical className="h-4 w-4 text-muted-foreground" /></div></TableCell>}
-                                          {((viewMode === "my-categories" || viewMode === "custom-categories") && !reorderMode) && (
-                                            <TableCell className="w-6"><div {...dragProvided.dragHandleProps} className="cursor-grab active:cursor-grabbing"><GripVertical className="h-4 w-4 text-muted-foreground/40 hover:text-muted-foreground" /></div></TableCell>
-                                          )}
-                                          <TableCell className="text-xs text-muted-foreground font-mono">{idx + 1}</TableCell>
-                                          <TableCell className="font-medium text-sm">{item.item_name}</TableCell>
+                                          <TableCell className="w-8">
+                                            <div {...dragProvided.dragHandleProps} className="cursor-grab active:cursor-grabbing">
+                                              <GripVertical className="h-4 w-4 text-muted-foreground/20 group-hover/row:text-muted-foreground/60 transition-colors" />
+                                            </div>
+                                          </TableCell>
+                                          <TableCell className="text-sm font-medium text-foreground">{item.item_name}</TableCell>
                                           <TableCell className="text-xs text-muted-foreground">{item.unit || <span className="text-destructive/60">—</span>}</TableCell>
                                           <TableCell className="text-xs text-muted-foreground">{item.pack_size || <span className="text-destructive/60">—</span>}</TableCell>
-                                          <TableCell className="text-xs font-mono text-muted-foreground">{item.vendor_sku || "—"}</TableCell>
-                                          <TableCell className="text-sm font-mono">{item.default_unit_cost != null ? `$${Number(item.default_unit_cost).toFixed(2)}` : "—"}</TableCell>
+                                          <TableCell className="text-xs font-mono text-muted-foreground/60">{item.vendor_sku || "—"}</TableCell>
+                                          <TableCell className="text-sm font-mono tabular-nums text-right">{item.default_unit_cost != null ? `$${Number(item.default_unit_cost).toFixed(2)}` : "—"}</TableCell>
                                           <TableCell>
-                                            <div className="flex gap-1">
+                                            <div className="flex gap-1 opacity-0 group-hover/row:opacity-100 transition-opacity">
                                               <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => { setEditingItem(item.id); setEditValues({ item_name: item.item_name, category: item.category, unit: item.unit, pack_size: item.pack_size, vendor_sku: item.vendor_sku, default_unit_cost: item.default_unit_cost }); }}>
                                                 <Pencil className="h-3.5 w-3.5" />
+                                              </Button>
+                                              <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => handleDuplicateItem(item)}>
+                                                <Copy className="h-3.5 w-3.5" />
                                               </Button>
                                               <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive hover:text-destructive" onClick={() => handleDeleteItem(item.id)}>
                                                 <Trash2 className="h-3.5 w-3.5" />
@@ -1536,9 +1594,11 @@ export default function ListManagementPage() {
                           )}
                         </Droppable>
                       </Table>
-                    </Card>
+                      )
+                    )}
                   </div>
-                ))
+                ))}
+                </div>
               )}
             </DragDropContext>
           </TabsContent>
@@ -1546,15 +1606,13 @@ export default function ListManagementPage() {
           {/* ── ISSUES TAB ── */}
           <TabsContent value="issues" className="space-y-4">
             {issues.length === 0 ? (
-              <Card>
-                <CardContent className="py-12 text-center text-muted-foreground">
-                  <Check className="mx-auto h-10 w-10 mb-3 text-success opacity-40" />
-                  <p className="text-sm font-medium">No issues found</p>
-                  <p className="text-xs text-muted-foreground mt-1">All items have the required fields filled in.</p>
-                </CardContent>
-              </Card>
+              <div className="border rounded-lg py-16 text-center text-muted-foreground">
+                <Check className="mx-auto h-12 w-12 mb-4 text-success opacity-40" />
+                <p className="text-sm font-medium">No issues found</p>
+                <p className="text-xs text-muted-foreground mt-1">All items have the required fields filled in.</p>
+              </div>
             ) : (
-              <Card className="overflow-hidden border shadow-sm">
+              <div className="overflow-hidden border rounded-lg">
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-muted/30">
@@ -1581,7 +1639,7 @@ export default function ListManagementPage() {
                     ))}
                   </TableBody>
                 </Table>
-              </Card>
+              </div>
             )}
           </TabsContent>
 
@@ -1773,7 +1831,7 @@ export default function ListManagementPage() {
   // ─── MY LISTS GRID VIEW ───────────────────────
   // ═══════════════════════════════════════════════
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="space-y-8 animate-fade-in">
       <Breadcrumb>
         <BreadcrumbList>
           <BreadcrumbItem><BreadcrumbLink href="/app/dashboard">Home</BreadcrumbLink></BreadcrumbItem>
@@ -1814,7 +1872,7 @@ export default function ListManagementPage() {
       <div className="flex items-center gap-3">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input value={gridSearch} onChange={e => setGridSearch(e.target.value)} placeholder="Search lists..." className="pl-9 h-9" />
+          <Input value={gridSearch} onChange={e => setGridSearch(e.target.value)} placeholder="Search lists..." className="pl-9 h-10" />
         </div>
         <Select value={gridSort} onValueChange={(v: "date" | "name") => setGridSort(v)}>
           <SelectTrigger className="w-36 h-9"><SelectValue /></SelectTrigger>
@@ -1826,36 +1884,41 @@ export default function ListManagementPage() {
       </div>
 
       {/* Lists Grid */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {/* Create card */}
-        <Card className="border-dashed border-2 hover:border-primary/30 hover:bg-muted/30 transition-all cursor-pointer" onClick={() => setCreateOpen(true)}>
-          <CardContent className="flex flex-col items-center justify-center py-10 text-muted-foreground">
-            <Plus className="h-8 w-8 mb-2 opacity-40" />
+        <Card className="border-dashed border-2 rounded-xl hover:border-primary/30 hover:bg-muted/30 transition-all cursor-pointer" onClick={() => setCreateOpen(true)}>
+          <CardContent className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full border-2 border-dashed border-muted-foreground/30 mb-3">
+              <Plus className="h-5 w-5 opacity-40" />
+            </div>
             <span className="text-sm font-medium">Create new list</span>
           </CardContent>
         </Card>
 
         {/* Purchase History card */}
-        <Card className="hover:shadow-md transition-all cursor-pointer border shadow-sm group bg-muted/10" onClick={() => navigate("/app/purchase-history")}>
-          <CardContent className="p-4 space-y-2">
-            <div className="flex items-center gap-2">
-              <ShoppingCart className="h-4 w-4 text-primary opacity-60" />
+        <Card className="rounded-xl hover:shadow-md transition-all cursor-pointer border shadow-sm group" onClick={() => navigate("/app/purchase-history")}>
+          <CardContent className="p-5 space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
+                <ShoppingCart className="h-4 w-4 text-primary" />
+              </div>
               <h3 className="font-semibold text-sm">Purchase History</h3>
             </div>
-            <p className="text-[11px] text-muted-foreground">View all saved orders and procurement costs</p>
-            <div className="flex items-center gap-1 text-primary">
-              <span className="text-[10px] font-medium">Open</span>
-              <ChevronRight className="h-3 w-3" />
-            </div>
+            <p className="text-xs text-muted-foreground">View all saved orders and procurement costs</p>
+            <Button variant="outline" size="sm" className="w-full gap-1 text-xs">
+              Open <ChevronRight className="h-3 w-3" />
+            </Button>
           </CardContent>
         </Card>
 
         {sortedLists.map(list => (
-          <Card key={list.id} className="hover:shadow-md transition-all cursor-pointer border shadow-sm group" onClick={() => openListDetail(list)}>
-            <CardContent className="p-4 space-y-2">
+          <Card key={list.id} className="rounded-xl hover:shadow-md transition-all cursor-pointer border shadow-sm group" onClick={() => openListDetail(list)}>
+            <CardContent className="p-5 space-y-3">
               <div className="flex items-start justify-between">
-                <div className="flex items-center gap-2">
-                  <ClipboardList className="h-4 w-4 text-primary opacity-60" />
+                <div className="flex items-center gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-amber text-primary-foreground font-bold text-sm">
+                    {list.name.charAt(0).toUpperCase()}
+                  </div>
                   <h3 className="font-semibold text-sm">{list.name}</h3>
                 </div>
                 <DropdownMenu>
@@ -1891,24 +1954,25 @@ export default function ListManagementPage() {
               </div>
               <div className="flex items-center gap-2">
                 <Badge variant="secondary" className="text-[10px] font-mono">{itemCounts[list.id] || 0} items</Badge>
-                <span className="text-[11px] text-muted-foreground">{new Date(list.created_at).toLocaleDateString()}</span>
+                <span className="text-[11px] text-muted-foreground">{new Date(list.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>
               </div>
-              {currentRestaurant && (
-                <p className="text-[10px] text-muted-foreground truncate">{currentRestaurant.name}</p>
-              )}
+              <Button variant="outline" size="sm" className="w-full text-xs" onClick={(e) => { e.stopPropagation(); openListDetail(list); }}>
+                Open
+              </Button>
             </CardContent>
           </Card>
         ))}
       </div>
 
       {sortedLists.length === 0 && !gridSearch && (
-        <Card>
-          <CardContent className="py-12 text-center text-muted-foreground">
-            <ClipboardList className="mx-auto h-10 w-10 mb-3 opacity-20" />
-            <p className="text-sm font-medium">No lists yet</p>
-            <p className="text-xs mt-1">Create your first inventory list or import from a file.</p>
-          </CardContent>
-        </Card>
+        <div className="border rounded-lg py-16 text-center text-muted-foreground">
+          <ClipboardList className="mx-auto h-12 w-12 mb-4 opacity-20" />
+          <p className="text-sm font-medium">No lists yet</p>
+          <p className="text-xs mt-1 mb-4">Create your first inventory list or import from a file.</p>
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setCreateOpen(true)}>
+            <Plus className="h-3.5 w-3.5" /> Create List
+          </Button>
+        </div>
       )}
 
       {/* Rename Dialog */}
