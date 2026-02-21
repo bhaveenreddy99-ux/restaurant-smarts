@@ -9,14 +9,18 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel,
   AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
-import { ShoppingCart, DollarSign, AlertTriangle, Package, Eye, ArrowLeft, Trash2, ExternalLink } from "lucide-react";
+import { ShoppingCart, DollarSign, AlertTriangle, Package, Eye, ArrowLeft, Trash2, ExternalLink, Info } from "lucide-react";
 import { ExportButtons } from "@/components/ExportButtons";
+import { getRisk, formatNum, formatCurrency, type RiskLevel } from "@/lib/inventory-utils";
 
 export default function SmartOrderPage() {
   const { currentRestaurant } = useRestaurant();
@@ -33,6 +37,10 @@ export default function SmartOrderPage() {
   const [dateFilter, setDateFilter] = useState("30");
   const [listFilter, setListFilter] = useState("all");
   const [lists, setLists] = useState<any[]>([]);
+
+  // Detail view toggles
+  const [showGreen, setShowGreen] = useState(false);
+  const [showNoPar, setShowNoPar] = useState(false);
 
   useEffect(() => {
     if (!currentRestaurant) return;
@@ -106,26 +114,48 @@ export default function SmartOrderPage() {
     const { error } = await supabase.from("smart_order_runs").delete().eq("id", idToDelete);
     if (error) {
       toast.error(`Delete failed: ${error.message}`);
-      // Roll back — refetch from DB to restore actual state
       fetchRuns();
     } else {
       toast.success("Smart order deleted");
-      // Silently confirm from DB (don't show loading)
       fetchRuns();
     }
   };
 
-  const riskBadge = (risk: string) => {
-    if (risk === "RED") return <Badge variant="destructive" className="text-[10px] font-medium">RED</Badge>;
-    if (risk === "YELLOW") return <Badge className="bg-warning text-warning-foreground text-[10px] font-medium">YELLOW</Badge>;
-    return <Badge className="bg-success text-success-foreground text-[10px] font-medium">GREEN</Badge>;
+  const riskBadge = (risk: string, currentStock?: number, parLevel?: number) => {
+    const riskInfo = getRisk(currentStock, parLevel);
+    const badgeClass = risk === "RED" ? "bg-destructive/10 text-destructive"
+      : risk === "YELLOW" ? "bg-warning text-warning-foreground"
+      : risk === "NO_PAR" ? "bg-muted/60 text-muted-foreground"
+      : "bg-success text-success-foreground";
+    const label = risk === "RED" ? "Critical" : risk === "YELLOW" ? "Low" : risk === "NO_PAR" ? "No PAR" : "OK";
+
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger>
+            <Badge className={`${badgeClass} text-[10px] font-medium border-0`}>{label}</Badge>
+          </TooltipTrigger>
+          <TooltipContent><p className="text-xs">{riskInfo.tooltip}</p></TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
   };
 
   // Detail view
   if (selectedRun) {
-    const totalEstCost = runItems.reduce((sum, i) => sum + (i.unit_cost ? i.suggested_order * Number(i.unit_cost) : 0), 0);
+    const orderItems = runItems.filter(i => i.suggested_order > 0 && i.risk !== "NO_PAR");
+    const greenItems = runItems.filter(i => i.risk === "GREEN" && i.suggested_order <= 0);
+    const noParItems = runItems.filter(i => i.risk === "NO_PAR");
     const redCount = runItems.filter(i => i.risk === "RED").length;
-    const orderCount = runItems.filter(i => i.suggested_order > 0).length;
+    const yellowCount = runItems.filter(i => i.risk === "YELLOW").length;
+    const totalEstCost = orderItems.reduce((sum, i) => sum + (i.unit_cost ? i.suggested_order * Number(i.unit_cost) : 0), 0);
+
+    // Build display list based on toggles
+    const displayItems = [
+      ...orderItems,
+      ...(showGreen ? greenItems : []),
+      ...(showNoPar ? noParItems : []),
+    ];
 
     return (
       <div className="space-y-5 animate-fade-in">
@@ -143,12 +173,11 @@ export default function SmartOrderPage() {
           </div>
           <div className="flex gap-2">
              <ExportButtons
-              items={runItems.map(i => ({ ...i, suggestedOrder: i.suggested_order, pack_size: i.pack_size }))}
+              items={displayItems.map(i => ({ ...i, suggestedOrder: i.suggested_order, pack_size: i.pack_size }))}
               filename="smart-order"
               type="smartorder"
             />
             <Button variant="outline" size="sm" className="gap-1.5" onClick={() => {
-              // Navigate to purchase history
               window.location.href = "/app/purchase-history";
             }}>
               <ExternalLink className="h-3.5 w-3.5" /> Purchase History
@@ -156,35 +185,63 @@ export default function SmartOrderPage() {
           </div>
         </div>
 
-        {/* Summary cards */}
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Card className="border-destructive/15">
-            <CardContent className="flex items-center gap-3 p-4">
-              <AlertTriangle className="h-5 w-5 text-destructive" />
-              <div>
-                <p className="stat-value text-lg">{redCount}</p>
-                <p className="text-[11px] text-muted-foreground">Critical items</p>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="flex items-center gap-3 p-4">
-              <Package className="h-5 w-5 text-primary" />
-              <div>
-                <p className="stat-value text-lg">{orderCount}</p>
-                <p className="text-[11px] text-muted-foreground">Items to order</p>
-              </div>
-            </CardContent>
-          </Card>
-          <Card className="border-primary/15">
-            <CardContent className="flex items-center gap-3 p-4">
-              <DollarSign className="h-5 w-5 text-primary" />
-              <div>
-                <p className="stat-value text-lg">${totalEstCost.toFixed(2)}</p>
-                <p className="text-[11px] text-muted-foreground">Est. total cost</p>
-              </div>
-            </CardContent>
-          </Card>
+        {/* Sticky Summary Bar */}
+        <div className="sticky top-0 z-10 bg-background/95 backdrop-blur-sm -mx-4 px-4 py-3 border-b border-border/40">
+          <div className="grid gap-3 sm:grid-cols-4">
+            <Card className="border-destructive/15">
+              <CardContent className="flex items-center gap-3 p-3">
+                <AlertTriangle className="h-5 w-5 text-destructive" />
+                <div>
+                  <p className="stat-value text-lg">{redCount}</p>
+                  <p className="text-[10px] text-muted-foreground">Critical</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-warning/15">
+              <CardContent className="flex items-center gap-3 p-3">
+                <AlertTriangle className="h-5 w-5 text-warning" />
+                <div>
+                  <p className="stat-value text-lg">{yellowCount}</p>
+                  <p className="text-[10px] text-muted-foreground">Warning</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="flex items-center gap-3 p-3">
+                <Package className="h-5 w-5 text-primary" />
+                <div>
+                  <p className="stat-value text-lg">{orderItems.length}</p>
+                  <p className="text-[10px] text-muted-foreground">Items to order</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-primary/15">
+              <CardContent className="flex items-center gap-3 p-3">
+                <DollarSign className="h-5 w-5 text-primary" />
+                <div>
+                  <p className="stat-value text-lg">{formatCurrency(totalEstCost)}</p>
+                  <p className="text-[10px] text-muted-foreground">Est. total cost</p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+
+        {/* Toggles */}
+        <div className="flex items-center gap-6">
+          <div className="flex items-center gap-2">
+            <Switch id="show-green" checked={showGreen} onCheckedChange={setShowGreen} />
+            <Label htmlFor="show-green" className="text-xs text-muted-foreground">Show OK items</Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <Switch id="show-nopar" checked={showNoPar} onCheckedChange={setShowNoPar} />
+            <Label htmlFor="show-nopar" className="text-xs text-muted-foreground">Show Missing PAR</Label>
+          </div>
+          {noParItems.length > 0 && (
+            <Badge variant="outline" className="text-[10px] gap-1">
+              <Info className="h-3 w-3" /> {noParItems.length} items missing PAR
+            </Badge>
+          )}
         </div>
 
         <Card className="overflow-hidden">
@@ -195,22 +252,37 @@ export default function SmartOrderPage() {
                 <TableHead className="text-xs font-semibold">Item</TableHead>
                 <TableHead className="text-xs font-semibold">Pack Size</TableHead>
                 <TableHead className="text-xs font-semibold">Current</TableHead>
-                <TableHead className="text-xs font-semibold">PAR</TableHead>
+                <TableHead className="text-xs font-semibold">
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger className="flex items-center gap-1">
+                        PAR <Info className="h-3 w-3 text-muted-foreground" />
+                      </TooltipTrigger>
+                      <TooltipContent><p className="text-xs max-w-xs">Target stock level for this item. Smart Order will refill up to this target.</p></TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </TableHead>
                 <TableHead className="text-xs font-semibold">Order Qty</TableHead>
                 <TableHead className="text-xs font-semibold">Est. Cost</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {runItems.map(i => (
+              {displayItems.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center py-8 text-sm text-muted-foreground">
+                    No items to display. Adjust filters above.
+                  </TableCell>
+                </TableRow>
+              ) : displayItems.map(i => (
                 <TableRow key={i.id} className="hover:bg-muted/30 transition-colors">
-                  <TableCell>{riskBadge(i.risk)}</TableCell>
+                  <TableCell>{riskBadge(i.risk, i.current_stock, i.par_level)}</TableCell>
                   <TableCell className="font-medium text-sm">{i.item_name}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{i.pack_size || "—"}</TableCell>
-                  <TableCell className="font-mono text-sm">{i.current_stock}</TableCell>
-                  <TableCell className="font-mono text-sm text-muted-foreground">{i.par_level}</TableCell>
-                  <TableCell className="font-mono text-sm font-bold">{i.suggested_order}</TableCell>
+                  <TableCell className="font-mono text-sm">{formatNum(i.current_stock)}</TableCell>
+                  <TableCell className="font-mono text-sm text-muted-foreground">{formatNum(i.par_level)}</TableCell>
+                  <TableCell className="font-mono text-sm font-bold">{i.suggested_order > 0 ? formatNum(i.suggested_order) : "—"}</TableCell>
                   <TableCell className="font-mono text-sm">
-                    {i.unit_cost ? `$${(i.suggested_order * Number(i.unit_cost)).toFixed(2)}` : "—"}
+                    {i.unit_cost && i.suggested_order > 0 ? formatCurrency(i.suggested_order * Number(i.unit_cost)) : "—"}
                   </TableCell>
                 </TableRow>
               ))}

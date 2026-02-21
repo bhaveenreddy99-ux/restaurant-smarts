@@ -13,10 +13,12 @@ function getRisk(currentStock: number, parLevel: number | null | undefined): { l
   if (parLevel === null || parLevel === undefined || parLevel <= 0) {
     return { label: "No PAR", bgClass: "bg-muted/60", textClass: "text-muted-foreground" };
   }
-  const ratio = currentStock / parLevel;
-  if (ratio >= 1.0) return { label: "Low", bgClass: "bg-success/10", textClass: "text-success" };
-  if (ratio > 0.5) return { label: "Medium", bgClass: "bg-warning/10", textClass: "text-warning" };
-  return { label: "High", bgClass: "bg-destructive/10", textClass: "text-destructive" };
+  const stock = currentStock ?? 0;
+  if (stock <= 0) return { label: "Critical", bgClass: "bg-destructive/10", textClass: "text-destructive" };
+  const ratio = stock / parLevel;
+  if (ratio < 0.5) return { label: "Critical", bgClass: "bg-destructive/10", textClass: "text-destructive" };
+  if (ratio < 1.0) return { label: "Low", bgClass: "bg-warning/10", textClass: "text-warning" };
+  return { label: "OK", bgClass: "bg-success/10", textClass: "text-success" };
 }
 
 function formatDateTime(isoString: string) {
@@ -192,7 +194,7 @@ export default function ApprovedPage() {
                             <Badge variant="secondary" className="text-[10px] font-normal">{item.category || "—"}</Badge>
                           </TableCell>
                           <TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
-                          <TableCell className="font-mono text-sm">{Number(item.current_stock)}</TableCell>
+                          <TableCell className="font-mono text-sm">{Number(item.current_stock) % 1 === 0 ? Number(item.current_stock) : parseFloat(Number(item.current_stock).toFixed(2))}</TableCell>
                           <TableCell className="font-mono text-sm text-muted-foreground">
                             {item.approved_par !== null && item.approved_par !== undefined ? item.approved_par : "—"}
                           </TableCell>
@@ -202,7 +204,7 @@ export default function ApprovedPage() {
                             </Badge>
                           </TableCell>
                           <TableCell className="font-mono text-sm">
-                            {suggestedOrder !== null ? (suggestedOrder % 1 === 0 ? suggestedOrder : suggestedOrder.toFixed(1)) : "—"}
+                            {suggestedOrder !== null ? (suggestedOrder % 1 === 0 ? suggestedOrder : parseFloat(suggestedOrder.toFixed(2))) : "—"}
                           </TableCell>
                           <TableCell className="font-mono text-sm">
                             {item.unit_cost ? `$${Number(item.unit_cost).toFixed(2)}` : "—"}

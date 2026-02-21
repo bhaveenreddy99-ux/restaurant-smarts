@@ -13,10 +13,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { Plus, BookOpen, Trash2, Save, Check, Search } from "lucide-react";
+import { Plus, BookOpen, Trash2, Save, Check, Search, Info } from "lucide-react";
 import { ExportButtons } from "@/components/ExportButtons";
 import { useIsCompact } from "@/hooks/use-mobile";
 import { useCategoryMapping } from "@/hooks/useCategoryMapping";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 export default function PARManagementPage() {
   const { currentRestaurant } = useRestaurant();
@@ -105,7 +106,11 @@ export default function PARManagementPage() {
   };
 
   const handleParLevelChange = (itemId: string, value: string) => {
-    const numVal = value === "" ? 0 : parseFloat(value);
+    if (value === "") {
+      setItems(prev => prev.map(i => i.id === itemId ? { ...i, par_level: null } : i));
+      return;
+    }
+    const numVal = parseFloat(value);
     if (!isNaN(numVal) && numVal >= 0) {
       setItems(prev => prev.map(i => i.id === itemId ? { ...i, par_level: numVal } : i));
     }

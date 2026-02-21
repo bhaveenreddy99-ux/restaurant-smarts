@@ -30,32 +30,13 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useCategoryMapping } from "@/hooks/useCategoryMapping";
 
+import {
+  getRisk, getRowState, getRowBgClass, formatNum, parseInputValue,
+  inputDisplayValue, computeOrderQty, computeRiskLevel, formatCurrency,
+} from "@/lib/inventory-utils";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+
 const defaultCategories = ["Frozen", "Cooler", "Dry"];
-
-// Risk classification helper
-function getRisk(currentStock: number, parLevel: number | null | undefined): { label: string; color: string; bgClass: string; textClass: string; rowBg: string } {
-  if (parLevel === null || parLevel === undefined || parLevel <= 0) {
-    return { label: "No PAR", color: "gray", bgClass: "bg-muted/60", textClass: "text-muted-foreground", rowBg: "" };
-  }
-  const ratio = currentStock / parLevel;
-  if (ratio >= 1.0) return { label: "OK", color: "green", bgClass: "bg-success/10", textClass: "text-success", rowBg: "" };
-  if (ratio > 0.5) return { label: "Low", color: "yellow", bgClass: "bg-warning/10", textClass: "text-warning", rowBg: "" };
-  return { label: "Critical", color: "red", bgClass: "bg-destructive/10", textClass: "text-destructive", rowBg: "" };
-}
-
-// Row state helper
-function getRowState(item: any): string {
-  if (item.current_stock === null || item.current_stock === undefined || item.current_stock === "") return "uncounted";
-  if (Number(item.current_stock) === 0) return "zero";
-  return "counted";
-}
-
-function getRowBgClass(item: any, risk: ReturnType<typeof getRisk>): string {
-  const state = getRowState(item);
-  if (state === "counted") return "bg-success/[0.04]";
-  if (state === "zero") return "bg-muted/20";
-  return "";
-}
 
 // ── Schedule helpers ──────────────────────────────────
 function computeNextOccurrence(schedule: any): Date | null {
@@ -400,15 +381,27 @@ export default function EnterInventoryPage() {
     toast.success(`Added ${catalogItem.item_name}`);
   };
 
-  const handleUpdateStock = async (id: string, stock: number) => {
-    const clamped = Math.max(0, stock);
-    setItems(items.map((i) => i.id === id ? { ...i, current_stock: clamped } : i));
+  const handleUpdateStock = async (id: string, rawValue: string) => {
+    const parsed = parseInputValue(rawValue);
+    setItems(items.map((i) => i.id === id ? { ...i, current_stock: parsed } : i));
     setLastEditedId(id);
   };
 
-  const handleUpdatePar = async (id: string, par: number) => {
-    const clamped = Math.max(0, par);
-    setItems(items.map((i) => i.id === id ? { ...i, par_level: clamped } : i));
+  const handleUpdatePar = async (id: string, rawValue: string) => {
+    const parsed = parseInputValue(rawValue);
+    setItems(items.map((i) => i.id === id ? { ...i, par_level: parsed } : i));
+  };
+
+  const handleClearRow = async (id: string) => {
+    setItems(items.map((i) => i.id === id ? { ...i, current_stock: null } : i));
+    setSavingId(id);
+    const { error } = await supabase.from("inventory_session_items").update({ current_stock: null } as any).eq("id", id);
+    setSavingId(null);
+    if (error) toast.error("Could not clear");
+    else {
+      setSavedId(id);
+      setTimeout(() => setSavedId(prev => prev === id ? null : prev), 1500);
+    }
   };
 
   const handleSavePar = useCallback(async (id: string, par: number) => {
@@ -422,9 +415,9 @@ export default function EnterInventoryPage() {
     }
   }, []);
 
-  const handleSaveStock = useCallback(async (id: string, stock: number) => {
+  const handleSaveStock = useCallback(async (id: string, stockVal: number | null) => {
     setSavingId(id);
-    const { error } = await supabase.from("inventory_session_items").update({ current_stock: stock }).eq("id", id);
+    const { error } = await supabase.from("inventory_session_items").update({ current_stock: stockVal ?? null } as any).eq("id", id);
     setSavingId(null);
     if (error) {
       toast.error("Could not save — tap to retry");
@@ -489,9 +482,8 @@ export default function EnterInventoryPage() {
       const computed = sessionItems.map(i => {
         const parLevel = parMap[i.item_name] ?? Number(i.par_level);
         const currentStock = Number(i.current_stock ?? 0);
-        const ratio = parLevel > 0 ? currentStock / parLevel : null;
-        const risk = ratio === null ? "GREEN" : ratio < 0.5 ? "RED" : ratio < 1.0 ? "YELLOW" : "GREEN";
-        const suggestedOrder = parLevel > 0 ? Math.max(0, parLevel - currentStock) : 0;
+        const risk = computeRiskLevel(currentStock, parLevel);
+        const suggestedOrder = computeOrderQty(currentStock, parLevel, i.unit, i.pack_size);
         return { ...i, parLevel, currentStock, risk, suggestedOrder };
       });
 
@@ -657,12 +649,13 @@ export default function EnterInventoryPage() {
       const par = parMap[i.item_name];
       const parLevel = par ? Number(par.par_level) : Number(i.par_level);
       const currentStock = Number(i.current_stock);
-      const ratio = currentStock / Math.max(parLevel, 1);
+      const risk = computeRiskLevel(currentStock, parLevel);
+      const suggestedOrder = computeOrderQty(currentStock, parLevel, i.unit, i.pack_size);
       return {
         ...i,
         par_level: parLevel,
-        suggestedOrder: Math.max(parLevel - currentStock, 0),
-        risk: ratio < 0.5 ? "RED" : ratio < 1 ? "YELLOW" : "GREEN",
+        suggestedOrder,
+        risk,
       };
     });
 
@@ -1075,8 +1068,8 @@ export default function EnterInventoryPage() {
                       const need = approvedPar !== null && item.current_stock !== null
                         ? Math.max(0, approvedPar - Number(item.current_stock ?? 0))
                         : null;
-                      const risk = getRisk(Number(item.current_stock ?? 0), approvedPar);
-                      const rowState = getRowState(item);
+                      const risk = getRisk(item.current_stock, approvedPar);
+                      const rowState = getRowState(item.current_stock);
                       const isRecentlyEdited = lastEditedId === item.id;
 
                       return (
@@ -1112,13 +1105,10 @@ export default function EnterInventoryPage() {
                                   type="number"
                                   min={0}
                                   step={0.1}
-                                  value={item.current_stock == null ? "" : String(item.current_stock)}
+                                  value={inputDisplayValue(item.current_stock)}
                                   onFocus={(e) => e.target.select()}
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    handleUpdateStock(item.id, val === "" ? 0 : parseFloat(val) || 0);
-                                  }}
-                                  onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
+                                  onChange={(e) => handleUpdateStock(item.id, e.target.value)}
+                                  onBlur={() => handleSaveStock(item.id, item.current_stock)}
                                   onKeyDown={(e) => handleKeyDown(e, globalIdx, "stock")}
                                   className="h-14 text-xl font-mono text-center font-semibold rounded-lg border-2 border-border/60 focus:border-primary/50 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 />
@@ -1185,9 +1175,9 @@ export default function EnterInventoryPage() {
                         const approvedPar = getApprovedPar(item.item_name);
                         const currentStock = Number(item.current_stock ?? 0);
                         const need = approvedPar !== null ? Math.max(0, approvedPar - currentStock) : null;
-                        const risk = getRisk(currentStock, approvedPar);
-                        const rowState = getRowState(item);
-                        const rowBg = getRowBgClass(item, risk);
+                        const risk = getRisk(item.current_stock, approvedPar);
+                        const rowState = getRowState(item.current_stock);
+                        const rowBg = getRowBgClass(item.current_stock);
                         const isRecentlyEdited = lastEditedId === item.id;
 
                         return (
@@ -1207,13 +1197,10 @@ export default function EnterInventoryPage() {
                                   inputMode="decimal"
                                   min={0}
                                   step={0.1}
-                                  value={item.current_stock == null ? "" : String(item.current_stock)}
+                                  value={inputDisplayValue(item.current_stock)}
                                   onFocus={(e) => e.target.select()}
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    handleUpdateStock(item.id, val === "" ? 0 : parseFloat(val) || 0);
-                                  }}
-                                  onBlur={() => handleSaveStock(item.id, Number(item.current_stock))}
+                                  onChange={(e) => handleUpdateStock(item.id, e.target.value)}
+                                  onBlur={() => handleSaveStock(item.id, item.current_stock)}
                                   onKeyDown={(e) => handleKeyDown(e, globalIdx, "stock")}
                                   className="w-24 h-10 text-base font-mono text-center font-semibold rounded-lg border-2 border-border/50 focus:border-primary/50 bg-background [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                                 />
