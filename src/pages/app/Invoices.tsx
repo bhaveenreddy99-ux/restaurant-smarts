@@ -420,10 +420,10 @@ export default function InvoicesPage() {
               </div>
               <div className="space-y-1">
                 <Label className="text-xs font-medium">Location</Label>
-                <Select value={header.location_id} onValueChange={v => setHeader(h => ({ ...h, location_id: v }))}>
+                <Select value={header.location_id || "none"} onValueChange={v => setHeader(h => ({ ...h, location_id: v === "none" ? "" : v }))}>
                   <SelectTrigger className="h-9 text-sm"><SelectValue placeholder="Optional" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">None</SelectItem>
+                    <SelectItem value="none">None</SelectItem>
                     {locations.map(l => <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
@@ -438,10 +438,10 @@ export default function InvoicesPage() {
                   <Tooltip><TooltipTrigger><Info className="h-3 w-3 text-muted-foreground" /></TooltipTrigger>
                     <TooltipContent>Link to compare estimated vs actual costs</TooltipContent></Tooltip>
                 </Label>
-                <Select value={header.linked_smart_order_id} onValueChange={v => setHeader(h => ({ ...h, linked_smart_order_id: v }))}>
+                <Select value={header.linked_smart_order_id || "none"} onValueChange={v => setHeader(h => ({ ...h, linked_smart_order_id: v === "none" ? "" : v }))}>
                   <SelectTrigger className="h-9 text-sm w-full"><SelectValue placeholder="Optional — select to compare costs" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">None</SelectItem>
+                    <SelectItem value="none">None</SelectItem>
                     {smartOrders.map(so => (
                       <SelectItem key={so.id} value={so.id}>
                         {(so as any).inventory_lists?.name || "Smart Order"} — {new Date(so.created_at).toLocaleDateString()}
