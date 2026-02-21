@@ -22,7 +22,7 @@ import SmartOrderPage from "@/pages/app/SmartOrder";
 import PARManagementPage from "@/pages/app/PARManagement";
 import PARSuggestionsPage from "@/pages/app/PARSuggestions";
 
-import OrdersPage from "@/pages/app/Orders";
+import InvoicesPage from "@/pages/app/Invoices";
 import ReportsPage from "@/pages/app/Reports";
 import StaffPage from "@/pages/app/Staff";
 import PurchaseHistoryPage from "@/pages/app/PurchaseHistory";
@@ -65,7 +65,8 @@ const App = () => (
                 <Route path="par" element={<PARManagementPage />} />
                 <Route path="par/suggestions" element={<PARSuggestionsPage />} />
                 
-                <Route path="orders" element={<OrdersPage />} />
+                <Route path="invoices" element={<InvoicesPage />} />
+                <Route path="orders" element={<Navigate to="/app/invoices" replace />} />
                 <Route path="reports" element={<ReportsPage />} />
                 <Route path="staff" element={<OwnerRoute><StaffPage /></OwnerRoute>} />
                 <Route path="purchase-history" element={<PurchaseHistoryPage />} />
