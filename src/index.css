@@ -231,4 +231,40 @@
   .safe-area-bottom {
     padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
   }
+
+  /* Landing page utilities */
+  .landing-section {
+    @apply py-20 lg:py-28;
+  }
+
+  .landing-section-alt {
+    @apply py-20 lg:py-28;
+    background-color: hsl(220 14% 96%);
+  }
+
+  .landing-navy {
+    background-color: hsl(222 28% 9%);
+    color: hsl(210 20% 90%);
+  }
+
+  .text-gradient-orange {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, hsl(25 95% 53%), hsl(14 100% 57%));
+  }
+
+  .bg-gradient-orange {
+    background-image: linear-gradient(135deg, hsl(25 95% 53%), hsl(14 100% 57%));
+  }
+
+  .shadow-orange {
+    box-shadow: 0 4px 24px -4px hsl(25 95% 53% / 0.35);
+  }
+
+  .shadow-landing {
+    box-shadow: 0 4px 40px -12px hsl(0 0% 0% / 0.08), 0 0 0 1px hsl(0 0% 0% / 0.03);
+  }
+
+  .dashboard-mockup-shadow {
+    box-shadow: 0 25px 80px -12px hsl(0 0% 0% / 0.15), 0 0 0 1px hsl(0 0% 0% / 0.05);
+  }
 }
