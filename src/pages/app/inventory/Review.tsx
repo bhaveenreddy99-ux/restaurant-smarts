@@ -11,16 +11,10 @@ import { toast } from "sonner";
 import { CheckCircle, XCircle, Eye, ClipboardCheck, MoreHorizontal } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-
-function getRisk(currentStock: number, parLevel: number | null | undefined): { label: string; bgClass: string; textClass: string; color: string } {
-  if (parLevel === null || parLevel === undefined || parLevel <= 0) {
-    return { label: "No PAR", color: "gray", bgClass: "bg-muted/60", textClass: "text-muted-foreground" };
-  }
-  const ratio = currentStock / parLevel;
-  if (ratio >= 1.0) return { label: "Low", color: "green", bgClass: "bg-success/10", textClass: "text-success" };
-  if (ratio > 0.5) return { label: "Medium", color: "yellow", bgClass: "bg-warning/10", textClass: "text-warning" };
-  return { label: "High", color: "red", bgClass: "bg-destructive/10", textClass: "text-destructive" };
-}
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  getRisk, formatNum, computeRiskLevel, computeOrderQty, formatCurrency,
+} from "@/lib/inventory-utils";
 
 export default function ReviewPage() {
   const { currentRestaurant } = useRestaurant();
@@ -64,9 +58,8 @@ export default function ReviewPage() {
       const computed = sessionItems.map(i => {
         const parLevel = parMap[i.item_name] ?? Number(i.par_level);
         const currentStock = Number(i.current_stock ?? 0);
-        const ratio = parLevel > 0 ? currentStock / parLevel : null;
-        const risk = ratio === null ? "GREEN" : ratio < 0.5 ? "RED" : ratio < 1.0 ? "YELLOW" : "GREEN";
-        const suggestedOrder = parLevel > 0 ? Math.max(0, parLevel - currentStock) : 0;
+        const risk = computeRiskLevel(currentStock, parLevel);
+        const suggestedOrder = computeOrderQty(currentStock, parLevel, i.unit, i.pack_size);
         return { ...i, parLevel, currentStock, risk, suggestedOrder };
       });
 
@@ -386,7 +379,7 @@ export default function ReviewPage() {
                   const stock = getLocalStock(item);
                   const risk = getRisk(stock, item.approved_par);
                   const suggestedOrder = item.approved_par != null && item.approved_par > 0
-                    ? Math.max(0, item.approved_par - stock)
+                    ? computeOrderQty(stock, item.approved_par, item.unit, item.pack_size)
                     : null;
                   return (
                     <TableRow key={item.id} className={risk.bgClass}>
@@ -413,15 +406,22 @@ export default function ReviewPage() {
                         />
                       </TableCell>
                       <TableCell className="font-mono text-sm text-muted-foreground">
-                        {item.approved_par !== null && item.approved_par !== undefined ? item.approved_par : "—"}
+                        {item.approved_par !== null && item.approved_par !== undefined ? formatNum(item.approved_par) : "—"}
                       </TableCell>
                       <TableCell>
-                        <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px]`}>
-                          {risk.label}
-                        </Badge>
+                        <TooltipProvider>
+                          <Tooltip>
+                            <TooltipTrigger>
+                              <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px]`}>
+                                {risk.label}
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent><p className="text-xs">{risk.tooltip}</p></TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
                       </TableCell>
                       <TableCell className="font-mono text-sm">
-                        {suggestedOrder !== null ? suggestedOrder.toFixed(1) : "—"}
+                        {suggestedOrder !== null ? formatNum(suggestedOrder) : "—"}
                       </TableCell>
                     </TableRow>
                   );
