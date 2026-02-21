@@ -35,7 +35,7 @@ export default function ForgotPasswordPage() {
               <ChefHat className="h-5 w-5 text-primary" />
             </div>
             <span className="text-xl font-bold tracking-tight">
-              Resta<span className="text-gradient-amber">rentIQ</span>
+              Restau<span className="text-gradient-amber">rantIQ</span>
             </span>
           </Link>
           <p className="mt-3 text-sm text-muted-foreground">Reset your password</p>

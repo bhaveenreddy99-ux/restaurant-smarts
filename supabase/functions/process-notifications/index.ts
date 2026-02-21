@@ -60,7 +60,7 @@ function buildAlertEmailHtml(restaurantName: string, locationName: string | null
           ⚡ Review your inventory and consider placing a Smart Order.
         </div>
       </div>
-      <p style="text-align:center;color:#9ca3af;font-size:11px;margin-top:16px">RestarentIQ — Inventory Intelligence</p>
+      <p style="text-align:center;color:#9ca3af;font-size:11px;margin-top:16px">RestaurantIQ — Inventory Intelligence</p>
     </div>
   `;
 }
@@ -85,7 +85,7 @@ function buildDigestEmailHtml(userName: string, groups: any[]): string {
       <div style="background:white;border:1px solid #e5e7eb;border-top:none;padding:24px;border-radius:0 0 12px 12px">
         ${sections}
       </div>
-      <p style="text-align:center;color:#9ca3af;font-size:11px;margin-top:16px">RestarentIQ — Inventory Intelligence</p>
+      <p style="text-align:center;color:#9ca3af;font-size:11px;margin-top:16px">RestaurantIQ — Inventory Intelligence</p>
     </div>
   `;
 }
@@ -102,7 +102,7 @@ function buildReminderEmailHtml(restaurantName: string, locationName: string | n
         <p style="color:#6b7280;font-size:14px;margin:0">It's time to enter your inventory counts. Please log in and complete your inventory entry.</p>
         <p style="color:#9ca3af;font-size:12px;margin:16px 0 0">Scheduled for: ${timestamp}</p>
       </div>
-      <p style="text-align:center;color:#9ca3af;font-size:11px;margin-top:16px">RestarentIQ — Inventory Intelligence</p>
+      <p style="text-align:center;color:#9ca3af;font-size:11px;margin-top:16px">RestaurantIQ — Inventory Intelligence</p>
     </div>
   `;
 }
