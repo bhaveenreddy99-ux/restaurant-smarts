@@ -116,7 +116,7 @@ export function AppSidebar() {
             <img src={logo} alt="RestaurantIQ" className="h-full w-full object-contain" />
           </div>
           <span className="text-[15px] font-bold text-sidebar-accent-foreground tracking-tight">
-            Resta<span className="text-sidebar-primary">rentIQ</span>
+            Restau<span className="text-sidebar-primary">rantIQ</span>
           </span>
         </div>
       </div>

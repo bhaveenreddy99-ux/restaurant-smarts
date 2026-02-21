@@ -43,7 +43,7 @@ export default function CreateRestaurantPage() {
         <div className="text-center">
           <ChefHat className="mx-auto h-10 w-10 text-primary mb-3" />
           <h1 className="text-2xl font-bold">Create Your Restaurant</h1>
-          <p className="text-sm text-muted-foreground mt-1">Get started with RestarentIQ</p>
+          <p className="text-sm text-muted-foreground mt-1">Get started with RestaurantIQ</p>
         </div>
         <form onSubmit={handleCreate} className="space-y-4">
           <div className="space-y-2">
