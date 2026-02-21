@@ -1,46 +1,28 @@
 
 
-## Fix Brand Name Typo: "RestarentIQ" to "RestaurantIQ"
+## Clean Slate: Delete All Users and Data
 
-The brand name is misspelled as **"RestarentIQ"** (missing "u" and "a") in multiple files across the app. This plan fixes every occurrence while preserving the styled rendering (e.g., gradient spans).
+This will remove all 3 user accounts and their associated restaurant data so you can sign up fresh and test from scratch.
 
----
+### What Gets Deleted
 
-### Files to Update
+- **3 user accounts**: bhaveenreddy99@gmail.com, testuser12345@test.com, bhaveen.msba@gmail.com
+- **5 restaurants**: schlotz1, Test Direct Insert, 3x Demo Restaurant
+- **All related data**: inventory lists, catalog items, PAR guides, sessions, orders, purchase history, smart order runs, settings, notifications, and invitations
 
-**Frontend Pages (6 files)**
+### Execution Steps
 
-| File | Current | Fixed |
-|------|---------|-------|
-| `src/pages/Login.tsx` | `Resta<span>rentIQ</span>` | `Restau<span>rantIQ</span>` |
-| `src/pages/Signup.tsx` | `Resta<span>rentIQ</span>` | `Restau<span>rantIQ</span>` |
-| `src/pages/ForgotPassword.tsx` | `Resta<span>rentIQ</span>` | `Restau<span>rantIQ</span>` |
-| `src/pages/ResetPassword.tsx` | `Resta<span>rentIQ</span>` | `Restau<span>rantIQ</span>` |
-| `src/pages/Demo.tsx` | `Resta<span>rentIQ</span>` | `Restau<span>rantIQ</span>` |
-| `src/pages/onboarding/CreateRestaurant.tsx` | `RestarentIQ` | `RestaurantIQ` |
+1. **Delete restaurant data** using the existing `delete_restaurant_cascade` RPC for each of the 5 restaurants (executed via direct SQL since we need service-role-level access)
+2. **Delete profiles** from the `profiles` table
+3. **Delete auth users** from `auth.users`
 
-**Sidebar (1 file)**
+### Technical Details
 
-| File | Current | Fixed |
-|------|---------|-------|
-| `src/components/AppSidebar.tsx` | `Resta<span>rentIQ</span>` | `Restau<span>rantIQ</span>` |
+The cleanup will run in this order to respect foreign key constraints:
+1. Delete all restaurant-scoped data (cascade function handles inventory, sessions, orders, PAR, etc.)
+2. Delete `restaurant_members` and `restaurants`
+3. Delete `profiles`
+4. Delete `auth.users` entries
 
-**Backend Functions (2 files)**
-
-| File | Current | Fixed |
-|------|---------|-------|
-| `supabase/functions/send-email/index.ts` | `RestarentIQ <onboarding@resend.dev>` | `RestaurantIQ <onboarding@resend.dev>` |
-| `supabase/functions/process-notifications/index.ts` | `RestarentIQ` (3 occurrences) | `RestaurantIQ` |
-
-**Utilities (1 file)**
-
-| File | Current | Fixed |
-|------|---------|-------|
-| `src/lib/export-utils.ts` | `RestarentIQ Export` | `RestaurantIQ Export` |
-
----
-
-### Total: 10 files, ~12 string replacements
-
-No logic changes. No database changes. Pure find-and-replace of the misspelled brand name.
+No code changes are needed -- this is purely a data cleanup operation.
 
