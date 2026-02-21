@@ -18,7 +18,7 @@ export default function StaffPage() {
   const [invitations, setInvitations] = useState<any[]>([]);
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState<string>("STAFF");
+  const [role, setRole] = useState<string>("MANAGER");
   const [sending, setSending] = useState(false);
 
   const fetchMembers = async () => {
@@ -76,7 +76,7 @@ export default function StaffPage() {
       }
 
       setEmail("");
-      setRole("STAFF");
+      setRole("MANAGER");
       setOpen(false);
       fetchInvitations();
     } catch (err: any) {
@@ -156,7 +156,6 @@ export default function StaffPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="STAFF">Staff</SelectItem>
                     <SelectItem value="MANAGER">Manager</SelectItem>
                   </SelectContent>
                 </Select>
@@ -260,7 +259,7 @@ export default function StaffPage() {
                   </TableCell>
                   <TableCell>
                     <Select
-                      value={m.role}
+                      value={m.role === "STAFF" ? "MANAGER" : m.role}
                       onValueChange={(v: "OWNER" | "MANAGER" | "STAFF") =>
                         handleRoleChange(m.id, v)
                       }
@@ -271,7 +270,6 @@ export default function StaffPage() {
                       <SelectContent>
                         <SelectItem value="OWNER">Owner</SelectItem>
                         <SelectItem value="MANAGER">Manager</SelectItem>
-                        <SelectItem value="STAFF">Staff</SelectItem>
                       </SelectContent>
                     </Select>
                   </TableCell>

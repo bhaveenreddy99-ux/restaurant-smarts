@@ -4,16 +4,11 @@ import {
   ClipboardList,
   ShoppingCart,
   BookOpen,
-  Truck,
   BarChart3,
   Users,
   LogOut,
   Receipt,
   Settings,
-  Bell,
-  AlertTriangle as AlertIcon,
-  Clock,
-  TrendingUp,
 } from "lucide-react";
 import logo from "@/assets/logo.png";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -39,31 +34,20 @@ const mainNav = [
 ];
 
 const inventoryNav = [
-  { title: "List Management", url: "/app/inventory/lists", icon: ClipboardList },
   { title: "Inventory Management", url: "/app/inventory/enter", icon: Package },
+  { title: "List Management", url: "/app/inventory/lists", icon: ClipboardList },
+  { title: "PAR Management", url: "/app/par", icon: BookOpen },
   { title: "Smart Order", url: "/app/smart-order", icon: ShoppingCart },
   { title: "Purchase History", url: "/app/purchase-history", icon: Receipt },
 ];
 
-const operationsNav = [
-  { title: "Orders", url: "/app/orders", icon: Truck },
-];
-
 const insightsNav = [
   { title: "Reports", url: "/app/reports", icon: BarChart3 },
-  { title: "PAR Management", url: "/app/par", icon: BookOpen },
-  { title: "PAR Suggestions", url: "/app/par/suggestions", icon: TrendingUp },
 ];
 
-const notificationsNav = [
-  { title: "Notifications", url: "/app/notifications", icon: Bell },
-];
-
-const adminNav = [
-  { title: "Staff", url: "/app/staff", icon: Users },
+const ownerNav = [
+  { title: "Users & Permissions", url: "/app/staff", icon: Users },
   { title: "Settings", url: "/app/settings", icon: Settings },
-  { title: "Alert Settings", url: "/app/settings/alerts", icon: AlertIcon },
-  { title: "Reminders", url: "/app/settings/reminders", icon: Clock },
 ];
 
 export function AppSidebar() {
@@ -76,13 +60,14 @@ export function AppSidebar() {
 
   // Derive effective role — fall back to highest role across all restaurants
   // when currentRestaurant is null (portfolio mode or stuck state)
-  const effectiveRole = currentRestaurant?.role
+  // STAFF is temporarily treated as MANAGER in the UI
+  const rawRole = currentRestaurant?.role
     ?? (restaurants.some(r => r.role === "OWNER") ? "OWNER"
-      : restaurants.some(r => r.role === "MANAGER") ? "MANAGER"
-      : "STAFF");
+      : restaurants.some(r => r.role === "MANAGER" || r.role === "STAFF") ? "MANAGER"
+      : "MANAGER");
+  const effectiveRole = rawRole === "STAFF" ? "MANAGER" : rawRole;
 
   const isOwner = effectiveRole === "OWNER";
-  const isManagerPlus = isOwner || effectiveRole === "MANAGER";
 
   const renderGroup = (label: string, items: typeof mainNav) => (
     <SidebarGroup key={label}>
@@ -130,16 +115,8 @@ export function AppSidebar() {
       <SidebarContent className="px-2 pt-2">
         {renderGroup("Overview", mainNav)}
         {renderGroup("Inventory", inventoryNav)}
-        
-        {renderGroup("Operations", operationsNav)}
         {renderGroup("Insights", insightsNav)}
-        {renderGroup("Alerts", notificationsNav)}
-        {isManagerPlus && renderGroup("Admin", adminNav.filter(n => {
-          // Staff management is owner-only
-          if (n.url === "/app/staff") return isOwner;
-          // All other admin items (Settings, Alert Settings, Reminders) are available to all managers
-          return true;
-        }))}
+        {isOwner && renderGroup("Admin", ownerNav)}
       </SidebarContent>
 
       <SidebarFooter className="p-3">

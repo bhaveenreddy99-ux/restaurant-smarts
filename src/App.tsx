@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { RestaurantProvider } from "@/contexts/RestaurantContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
+import { OwnerRoute } from "@/components/OwnerRoute";
 import LandingPage from "@/pages/Landing";
 import LoginPage from "@/pages/Login";
 import SignupPage from "@/pages/Signup";
@@ -66,12 +67,12 @@ const App = () => (
                 
                 <Route path="orders" element={<OrdersPage />} />
                 <Route path="reports" element={<ReportsPage />} />
-                <Route path="staff" element={<StaffPage />} />
+                <Route path="staff" element={<OwnerRoute><StaffPage /></OwnerRoute>} />
                 <Route path="purchase-history" element={<PurchaseHistoryPage />} />
                 <Route path="notifications" element={<NotificationsPage />} />
-                <Route path="settings" element={<SettingsPage />} />
-                <Route path="settings/alerts" element={<AlertSettingsPage />} />
-                <Route path="settings/reminders" element={<ReminderSettingsPage />} />
+                <Route path="settings" element={<OwnerRoute><SettingsPage /></OwnerRoute>} />
+                <Route path="settings/alerts" element={<OwnerRoute><AlertSettingsPage /></OwnerRoute>} />
+                <Route path="settings/reminders" element={<OwnerRoute><ReminderSettingsPage /></OwnerRoute>} />
               </Route>
               <Route path="*" element={<NotFound />} />
             </Routes>
