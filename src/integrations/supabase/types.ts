@@ -675,6 +675,53 @@ export type Database = {
           },
         ]
       }
+      invitations: {
+        Row: {
+          accepted_at: string | null
+          created_at: string
+          email: string
+          expires_at: string
+          id: string
+          invited_by: string
+          restaurant_id: string
+          role: Database["public"]["Enums"]["app_role"]
+          status: Database["public"]["Enums"]["invitation_status"]
+          token: string
+        }
+        Insert: {
+          accepted_at?: string | null
+          created_at?: string
+          email: string
+          expires_at?: string
+          id?: string
+          invited_by: string
+          restaurant_id: string
+          role?: Database["public"]["Enums"]["app_role"]
+          status?: Database["public"]["Enums"]["invitation_status"]
+          token?: string
+        }
+        Update: {
+          accepted_at?: string | null
+          created_at?: string
+          email?: string
+          expires_at?: string
+          id?: string
+          invited_by?: string
+          restaurant_id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          status?: Database["public"]["Enums"]["invitation_status"]
+          token?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "invitations_restaurant_id_fkey"
+            columns: ["restaurant_id"]
+            isOneToOne: false
+            referencedRelation: "restaurants"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       list_categories: {
         Row: {
           category_set_id: string | null
@@ -1849,6 +1896,7 @@ export type Database = {
         }
         Returns: boolean
       }
+      invitation_restaurant_id: { Args: { inv_id: string }; Returns: string }
       is_member_of: { Args: { r_id: string }; Returns: boolean }
       list_category_restaurant_id: {
         Args: { lc_list_id: string }
@@ -1874,6 +1922,7 @@ export type Database = {
     Enums: {
       app_role: "OWNER" | "MANAGER" | "STAFF"
       email_digest_mode: "IMMEDIATE" | "DAILY_DIGEST"
+      invitation_status: "PENDING" | "ACCEPTED" | "EXPIRED" | "REVOKED"
       notification_severity: "INFO" | "WARNING" | "CRITICAL"
       order_status: "PENDING" | "PREP" | "READY" | "COMPLETED" | "CANCELED"
       recipients_mode: "OWNERS_MANAGERS" | "ALL" | "CUSTOM"
@@ -2007,6 +2056,7 @@ export const Constants = {
     Enums: {
       app_role: ["OWNER", "MANAGER", "STAFF"],
       email_digest_mode: ["IMMEDIATE", "DAILY_DIGEST"],
+      invitation_status: ["PENDING", "ACCEPTED", "EXPIRED", "REVOKED"],
       notification_severity: ["INFO", "WARNING", "CRITICAL"],
       order_status: ["PENDING", "PREP", "READY", "COMPLETED", "CANCELED"],
       recipients_mode: ["OWNERS_MANAGERS", "ALL", "CUSTOM"],
