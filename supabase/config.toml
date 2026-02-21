@@ -8,3 +8,6 @@ verify_jwt = false
 
 [functions.portfolio-dashboard]
 verify_jwt = false
+
+[functions.send-invite]
+verify_jwt = false
