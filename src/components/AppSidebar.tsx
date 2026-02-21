@@ -4,11 +4,14 @@ import {
   ClipboardList,
   ShoppingCart,
   BookOpen,
+  Truck,
   BarChart3,
   Users,
   LogOut,
   Receipt,
   Settings,
+  Bell,
+  TrendingUp,
 } from "lucide-react";
 import logo from "@/assets/logo.png";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -37,12 +40,18 @@ const inventoryNav = [
   { title: "Inventory Management", url: "/app/inventory/enter", icon: Package },
   { title: "List Management", url: "/app/inventory/lists", icon: ClipboardList },
   { title: "PAR Management", url: "/app/par", icon: BookOpen },
+  { title: "PAR Suggestions", url: "/app/par/suggestions", icon: TrendingUp },
   { title: "Smart Order", url: "/app/smart-order", icon: ShoppingCart },
   { title: "Purchase History", url: "/app/purchase-history", icon: Receipt },
 ];
 
+const operationsNav = [
+  { title: "Orders", url: "/app/orders", icon: Truck },
+];
+
 const insightsNav = [
   { title: "Reports", url: "/app/reports", icon: BarChart3 },
+  { title: "Notifications", url: "/app/notifications", icon: Bell },
 ];
 
 const ownerNav = [
@@ -115,6 +124,7 @@ export function AppSidebar() {
       <SidebarContent className="px-2 pt-2">
         {renderGroup("Overview", mainNav)}
         {renderGroup("Inventory", inventoryNav)}
+        {renderGroup("Operations", operationsNav)}
         {renderGroup("Insights", insightsNav)}
         {isOwner && renderGroup("Admin", ownerNav)}
       </SidebarContent>
