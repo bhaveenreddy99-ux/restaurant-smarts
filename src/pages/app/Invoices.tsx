@@ -597,10 +597,10 @@ export default function InvoicesPage() {
                                   </SelectContent>
                                 </Select>
                               ) : item.match_status === "MANUAL" ? (
-                                <Select value={item.catalog_item_id || ""} onValueChange={v => mapItemToCatalog(idx, v)}>
+                                <Select value={item.catalog_item_id || "none"} onValueChange={v => mapItemToCatalog(idx, v === "none" ? "" : v)}>
                                   <SelectTrigger className="h-7 text-[10px] w-32"><SelectValue placeholder="Link item..." /></SelectTrigger>
                                   <SelectContent>
-                                    <SelectItem value="">None</SelectItem>
+                                    <SelectItem value="none">None</SelectItem>
                                     {catalogItems.map(c => (
                                       <SelectItem key={c.id} value={c.id} className="text-xs">{c.item_name}</SelectItem>
                                     ))}
