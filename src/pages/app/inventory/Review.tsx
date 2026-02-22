@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useRestaurant } from "@/contexts/RestaurantContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -7,14 +7,20 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { toast } from "sonner";
-import { CheckCircle, XCircle, Eye, ClipboardCheck, MoreHorizontal } from "lucide-react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { toast } from "sonner";
+import {
+  CheckCircle, XCircle, Eye, ClipboardCheck, MoreHorizontal,
+  ArrowLeft, Search, ChevronDown, ChevronRight,
+} from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import {
   getRisk, formatNum, computeRiskLevel, computeOrderQty, formatCurrency,
 } from "@/lib/inventory-utils";
+
+type FilterTab = "all" | "critical" | "low" | "ok" | "nopar";
 
 export default function ReviewPage() {
   const { currentRestaurant } = useRestaurant();
@@ -23,7 +29,9 @@ export default function ReviewPage() {
   const [viewItems, setViewItems] = useState<any[] | null>(null);
   const [viewSession, setViewSession] = useState<any>(null);
   const [localItems, setLocalItems] = useState<Record<string, number>>({});
-  const [showExceptionsOnly, setShowExceptionsOnly] = useState(true);
+  const [activeFilter, setActiveFilter] = useState<FilterTab>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
 
   const fetchSessions = async () => {
     if (!currentRestaurant) return;
@@ -152,50 +160,43 @@ export default function ReviewPage() {
 
   const handleView = async (session: any) => {
     setLocalItems({});
+    setActiveFilter("all");
+    setSearchQuery("");
+    setCollapsedCategories(new Set());
     const { data } = await supabase.from("inventory_session_items").select("*").eq("session_id", session.id);
-    
+
     if (currentRestaurant) {
       const { data: guides } = await supabase
         .from("par_guides")
         .select("id")
         .eq("restaurant_id", currentRestaurant.id)
         .eq("inventory_list_id", session.inventory_list_id);
-      
+
       if (guides && guides.length > 0) {
         const guideIds = guides.map(g => g.id);
         const { data: parData } = await supabase
           .from("par_guide_items")
           .select("item_name, par_level")
           .in("par_guide_id", guideIds);
-        
+
         if (parData) {
           const parMap: Record<string, number> = {};
           parData.forEach(p => { parMap[p.item_name] = Number(p.par_level); });
-          
+
           const enriched = (data || []).map(item => ({
             ...item,
             approved_par: parMap[item.item_name] ?? null,
           }));
           setViewItems(enriched);
           setViewSession(session);
-          // Default to exceptions-only if there are exceptions
-          const hasExceptions = enriched.some(item => {
-            const r = getRisk(Number(item.current_stock), parMap[item.item_name] ?? null);
-            return r.label === "High" || r.label === "Medium";
-          });
-          setShowExceptionsOnly(hasExceptions);
           return;
         }
       }
     }
-    
+
     setViewItems((data || []).map(item => ({ ...item, approved_par: null })));
     setViewSession(session);
-    setShowExceptionsOnly(false);
   };
-
-  const getLocalStock = (item: any) =>
-    localItems[item.id] !== undefined ? localItems[item.id] : Number(item.current_stock);
 
   const handleStockBlur = async (itemId: string, val: number) => {
     await supabase.from("inventory_session_items")
@@ -205,36 +206,242 @@ export default function ReviewPage() {
 
   const isManagerOrOwner = currentRestaurant?.role === "OWNER" || currentRestaurant?.role === "MANAGER";
 
-  // Risk summary for viewed items
-  const viewRiskSummary = viewItems
-    ? viewItems.reduce((acc, item) => {
-        const risk = getRisk(Number(item.current_stock), item.approved_par);
-        acc[risk.color] = (acc[risk.color] || 0) + 1;
-        return acc;
-      }, {} as Record<string, number>)
-    : null;
-
-  // Total suggested order (sum of all "need" values)
-  const totalSuggestedOrder = viewItems
-    ? viewItems.reduce((sum, item) => {
-        const stock = getLocalStock(item);
-        const par = item.approved_par;
-        if (par && par > 0) return sum + Math.max(0, par - stock);
-        return sum;
-      }, 0)
-    : 0;
-
-  // Filtered items for display
-  const displayedItems = (() => {
-    if (!viewItems) return null;
-    if (!showExceptionsOnly) return viewItems;
-    const exceptions = viewItems.filter(item => {
+  const riskCounts = useMemo(() => {
+    if (!viewItems) return { critical: 0, low: 0, ok: 0, nopar: 0 };
+    return viewItems.reduce((acc, item) => {
       const risk = getRisk(Number(item.current_stock), item.approved_par);
-      return risk.label === "High" || risk.label === "Medium";
+      if (risk.level === "RED") acc.critical++;
+      else if (risk.level === "YELLOW") acc.low++;
+      else if (risk.level === "GREEN") acc.ok++;
+      else acc.nopar++;
+      return acc;
+    }, { critical: 0, low: 0, ok: 0, nopar: 0 });
+  }, [viewItems]);
+
+  const filteredItems = useMemo(() => {
+    if (!viewItems) return [];
+    let items = viewItems;
+
+    if (activeFilter !== "all") {
+      items = items.filter(item => {
+        const risk = getRisk(Number(item.current_stock), item.approved_par);
+        if (activeFilter === "critical") return risk.level === "RED";
+        if (activeFilter === "low") return risk.level === "YELLOW";
+        if (activeFilter === "ok") return risk.level === "GREEN";
+        if (activeFilter === "nopar") return risk.level === "NO_PAR";
+        return true;
+      });
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      items = items.filter(item =>
+        item.item_name.toLowerCase().includes(q) ||
+        (item.category || "").toLowerCase().includes(q) ||
+        (item.pack_size || "").toLowerCase().includes(q)
+      );
+    }
+
+    return items;
+  }, [viewItems, activeFilter, searchQuery]);
+
+  const groupedByCategory = useMemo(() => {
+    const groups: Record<string, any[]> = {};
+    filteredItems.forEach(item => {
+      const cat = item.category || "Uncategorized";
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(item);
     });
-    // Fallback: if no exceptions, show all
-    return exceptions.length > 0 ? exceptions : viewItems;
-  })();
+    return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+  }, [filteredItems]);
+
+  const toggleCategory = (cat: string) => {
+    setCollapsedCategories(prev => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat); else next.add(cat);
+      return next;
+    });
+  };
+
+  const riskBadge = (risk: ReturnType<typeof getRisk>) => (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger>
+          <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px] font-medium`}>
+            {risk.label}
+          </Badge>
+        </TooltipTrigger>
+        <TooltipContent><p className="text-xs">{risk.tooltip}</p></TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+
+  if (viewItems && viewSession) {
+    return (
+      <div className="flex flex-col h-full animate-fade-in">
+        <div className="sticky top-0 z-20 bg-background border-b shrink-0">
+          <div className="flex items-center justify-between px-4 py-3 gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" onClick={() => {
+                setViewItems(null);
+                setViewSession(null);
+                setLocalItems({});
+              }}>
+                <ArrowLeft className="h-4 w-4" />
+              </Button>
+              <div className="min-w-0">
+                <h1 className="text-lg font-bold tracking-tight truncate">{viewSession.name}</h1>
+                <p className="text-xs text-muted-foreground truncate">
+                  {viewSession.inventory_lists?.name} · {new Date(viewSession.updated_at).toLocaleDateString()}
+                </p>
+              </div>
+            </div>
+            {isManagerOrOwner && (
+              <div className="flex gap-2 shrink-0">
+                <Button
+                  size="sm"
+                  className="bg-success hover:bg-success/90 text-success-foreground gap-1.5 h-9 text-xs"
+                  onClick={() => handleApprove(viewSession.id)}
+                >
+                  <CheckCircle className="h-3.5 w-3.5" /> Approve
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  className="gap-1.5 h-9 text-xs"
+                  onClick={() => handleReject(viewSession.id)}
+                >
+                  <XCircle className="h-3.5 w-3.5" /> Reject
+                </Button>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-4 gap-2 px-4 pb-3">
+            <div className="rounded-lg bg-destructive/10 p-2.5 text-center">
+              <p className="text-lg font-bold text-destructive">{riskCounts.critical}</p>
+              <p className="text-[10px] font-medium text-destructive uppercase tracking-wide">Critical</p>
+            </div>
+            <div className="rounded-lg bg-warning/10 p-2.5 text-center">
+              <p className="text-lg font-bold text-warning">{riskCounts.low}</p>
+              <p className="text-[10px] font-medium text-warning uppercase tracking-wide">Low</p>
+            </div>
+            <div className="rounded-lg bg-success/10 p-2.5 text-center">
+              <p className="text-lg font-bold text-success">{riskCounts.ok}</p>
+              <p className="text-[10px] font-medium text-success uppercase tracking-wide">OK</p>
+            </div>
+            <div className="rounded-lg bg-muted/60 p-2.5 text-center">
+              <p className="text-lg font-bold text-muted-foreground">{riskCounts.nopar}</p>
+              <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">No PAR</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 px-4 pb-3">
+            <div className="relative flex-1 max-w-xs">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Search items..."
+                className="pl-9 h-9"
+              />
+            </div>
+            <Tabs value={activeFilter} onValueChange={v => setActiveFilter(v as FilterTab)}>
+              <TabsList className="h-9">
+                <TabsTrigger value="all" className="text-xs px-3">All</TabsTrigger>
+                <TabsTrigger value="critical" className="text-xs px-3">Critical</TabsTrigger>
+                <TabsTrigger value="low" className="text-xs px-3">Low</TabsTrigger>
+                <TabsTrigger value="ok" className="text-xs px-3">OK</TabsTrigger>
+                <TabsTrigger value="nopar" className="text-xs px-3">No PAR</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          {filteredItems.length === 0 ? (
+            <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
+              No items match the current filter.
+            </div>
+          ) : (
+            groupedByCategory.map(([category, items]) => {
+              const isCollapsed = collapsedCategories.has(category);
+              return (
+                <Collapsible key={category} open={!isCollapsed} onOpenChange={() => toggleCategory(category)}>
+                  <CollapsibleTrigger className="w-full flex items-center gap-2 px-4 py-2.5 bg-muted/40 border-b hover:bg-muted/60 transition-colors cursor-pointer">
+                    {isCollapsed ? (
+                      <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                    ) : (
+                      <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
+                    )}
+                    <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{category}</span>
+                    <Badge variant="secondary" className="text-[10px] ml-1">{items.length}</Badge>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/20">
+                          <TableHead className="text-xs font-semibold">Item</TableHead>
+                          <TableHead className="text-xs font-semibold">Pack Size</TableHead>
+                          <TableHead className="text-xs font-semibold text-right">On Hand</TableHead>
+                          <TableHead className="text-xs font-semibold text-right">PAR</TableHead>
+                          <TableHead className="text-xs font-semibold text-right">Need</TableHead>
+                          <TableHead className="text-xs font-semibold">Risk</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {items.map(item => {
+                          const stock = localItems[item.id] !== undefined ? localItems[item.id] : Number(item.current_stock);
+                          const risk = getRisk(stock, item.approved_par);
+                          const need = item.approved_par != null && item.approved_par > 0
+                            ? computeOrderQty(stock, item.approved_par, item.unit, item.pack_size)
+                            : null;
+                          return (
+                            <TableRow key={item.id} className="min-h-[56px]">
+                              <TableCell className="text-sm font-medium py-3">{item.item_name}</TableCell>
+                              <TableCell className="text-xs text-muted-foreground py-3">{item.pack_size || "—"}</TableCell>
+                              <TableCell className="text-right font-mono text-sm py-3">
+                                <Input
+                                  type="number"
+                                  inputMode="decimal"
+                                  min={0}
+                                  step={0.1}
+                                  className="w-20 h-8 text-sm font-mono text-right ml-auto [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                  value={localItems[item.id] !== undefined ? localItems[item.id] : item.current_stock}
+                                  onFocus={(e) => e.target.select()}
+                                  onChange={(e) => {
+                                    const v = parseFloat(e.target.value) || 0;
+                                    setLocalItems(prev => ({ ...prev, [item.id]: v }));
+                                  }}
+                                  onBlur={(e) => {
+                                    const v = parseFloat(e.target.value) || 0;
+                                    handleStockBlur(item.id, v);
+                                  }}
+                                />
+                              </TableCell>
+                              <TableCell className="text-right font-mono text-sm text-muted-foreground py-3">
+                                {item.approved_par != null ? formatNum(item.approved_par) : "—"}
+                              </TableCell>
+                              <TableCell className="text-right font-mono text-sm font-bold py-3">
+                                {need !== null && need > 0 ? formatNum(need) : "—"}
+                              </TableCell>
+                              <TableCell className="py-3">
+                                {riskBadge(risk)}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </CollapsibleContent>
+                </Collapsible>
+              );
+            })
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -289,148 +496,6 @@ export default function ReviewPage() {
           ))}
         </div>
       )}
-
-      {/* Review Dialog — Exception-first */}
-      <Dialog open={!!viewItems} onOpenChange={() => { setViewItems(null); setViewSession(null); setLocalItems({}); }}>
-        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
-          {/* Dialog header with Approve button */}
-          <DialogHeader className="shrink-0">
-            <div className="flex items-start justify-between gap-3">
-              <DialogTitle className="text-base">{viewSession?.name} — Review</DialogTitle>
-              {isManagerOrOwner && viewSession && (
-                <div className="flex gap-2 shrink-0">
-                  <Button
-                    size="sm"
-                    className="bg-success hover:bg-success/90 text-success-foreground gap-1.5 h-8 text-xs"
-                    onClick={() => handleApprove(viewSession.id)}
-                  >
-                    <CheckCircle className="h-3.5 w-3.5" /> Approve
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    className="gap-1.5 h-8 text-xs"
-                    onClick={() => handleReject(viewSession.id)}
-                  >
-                    <XCircle className="h-3.5 w-3.5" /> Send back
-                  </Button>
-                </div>
-              )}
-            </div>
-          </DialogHeader>
-
-          {/* Risk summary cards */}
-          {viewRiskSummary && (
-            <div className="grid grid-cols-4 gap-2 shrink-0">
-              <div className="rounded-lg bg-destructive/10 p-2.5 text-center">
-                <p className="text-base font-bold text-destructive">{viewRiskSummary.red || 0}</p>
-                <p className="text-[10px] font-medium text-destructive uppercase tracking-wide">High</p>
-              </div>
-              <div className="rounded-lg bg-warning/10 p-2.5 text-center">
-                <p className="text-base font-bold text-warning">{viewRiskSummary.yellow || 0}</p>
-                <p className="text-[10px] font-medium text-warning uppercase tracking-wide">Medium</p>
-              </div>
-              <div className="rounded-lg bg-success/10 p-2.5 text-center">
-                <p className="text-base font-bold text-success">{viewRiskSummary.green || 0}</p>
-                <p className="text-[10px] font-medium text-success uppercase tracking-wide">Low</p>
-              </div>
-              <div className="rounded-lg bg-muted/60 p-2.5 text-center">
-                <p className="text-base font-bold text-muted-foreground">{viewRiskSummary.gray || 0}</p>
-                <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">No PAR</p>
-              </div>
-            </div>
-          )}
-
-          {/* Totals + filter toggles */}
-          <div className="flex items-center justify-between gap-3 shrink-0">
-            <div className="flex items-center gap-1.5">
-              <button
-                className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${showExceptionsOnly ? "bg-destructive/10 text-destructive border border-destructive/20" : "bg-muted/60 text-muted-foreground hover:bg-muted"}`}
-                onClick={() => setShowExceptionsOnly(true)}
-              >Exceptions only</button>
-              <button
-                className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-colors ${!showExceptionsOnly ? "bg-primary text-primary-foreground" : "bg-muted/60 text-muted-foreground hover:bg-muted"}`}
-                onClick={() => setShowExceptionsOnly(false)}
-              >Show all</button>
-            </div>
-            {totalSuggestedOrder > 0 && (
-              <p className="text-xs text-muted-foreground">
-                Total need: <span className="font-semibold text-foreground">{totalSuggestedOrder % 1 === 0 ? totalSuggestedOrder : totalSuggestedOrder.toFixed(1)} units</span>
-              </p>
-            )}
-          </div>
-
-          {/* Scrollable table */}
-          <div className="rounded-lg border overflow-hidden overflow-y-auto flex-1">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/30 sticky top-0">
-                  <TableHead className="text-xs font-semibold">Item</TableHead>
-                  <TableHead className="text-xs font-semibold">Category</TableHead>
-                  <TableHead className="text-xs font-semibold">Pack Size</TableHead>
-                  <TableHead className="text-xs font-semibold">Stock</TableHead>
-                  <TableHead className="text-xs font-semibold">PAR</TableHead>
-                  <TableHead className="text-xs font-semibold">Risk</TableHead>
-                  <TableHead className="text-xs font-semibold">Suggested Order</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {displayedItems?.map(item => {
-                  const stock = getLocalStock(item);
-                  const risk = getRisk(stock, item.approved_par);
-                  const suggestedOrder = item.approved_par != null && item.approved_par > 0
-                    ? computeOrderQty(stock, item.approved_par, item.unit, item.pack_size)
-                    : null;
-                  return (
-                    <TableRow key={item.id} className={risk.bgClass}>
-                      <TableCell className="text-sm font-medium">{item.item_name}</TableCell>
-                      <TableCell><Badge variant="secondary" className="text-[10px] font-normal">{item.category}</Badge></TableCell>
-                      <TableCell className="text-xs text-muted-foreground">{item.pack_size || "—"}</TableCell>
-                      <TableCell>
-                        <Input
-                          type="number"
-                          inputMode="decimal"
-                          min={0}
-                          step={0.1}
-                          className="w-20 h-7 text-sm font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                          value={localItems[item.id] !== undefined ? localItems[item.id] : item.current_stock}
-                          onFocus={(e) => e.target.select()}
-                          onChange={(e) => {
-                            const v = parseFloat(e.target.value) || 0;
-                            setLocalItems(prev => ({ ...prev, [item.id]: v }));
-                          }}
-                          onBlur={(e) => {
-                            const v = parseFloat(e.target.value) || 0;
-                            handleStockBlur(item.id, v);
-                          }}
-                        />
-                      </TableCell>
-                      <TableCell className="font-mono text-sm text-muted-foreground">
-                        {item.approved_par !== null && item.approved_par !== undefined ? formatNum(item.approved_par) : "—"}
-                      </TableCell>
-                      <TableCell>
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger>
-                              <Badge className={`${risk.bgClass} ${risk.textClass} border-0 text-[10px]`}>
-                                {risk.label}
-                              </Badge>
-                            </TooltipTrigger>
-                            <TooltipContent><p className="text-xs">{risk.tooltip}</p></TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      </TableCell>
-                      <TableCell className="font-mono text-sm">
-                        {suggestedOrder !== null ? formatNum(suggestedOrder) : "—"}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
