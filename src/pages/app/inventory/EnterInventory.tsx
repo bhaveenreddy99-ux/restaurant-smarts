@@ -1742,7 +1742,7 @@ export default function EnterInventoryPage() {
 
       {/* View Session Dialog */}
       <Dialog open={!!viewItems} onOpenChange={() => { setViewItems(null); setViewSession(null); }}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               {viewSession?.name} — Items
