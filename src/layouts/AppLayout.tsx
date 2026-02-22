@@ -10,7 +10,7 @@ export default function AppLayout() {
         <AppSidebar />
         <div className="flex-1 flex flex-col min-w-0">
           <AppHeader />
-          <main className="flex-1 p-5 lg:p-6 overflow-auto text-secondary border border-none">
+          <main className="flex-1 p-5 lg:p-6 overflow-y-auto text-secondary min-h-0">
             <Outlet />
           </main>
         </div>

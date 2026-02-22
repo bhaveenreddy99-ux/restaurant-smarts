@@ -278,8 +278,8 @@ export default function ReviewPage() {
 
   if (viewItems && viewSession) {
     return (
-      <div className="flex flex-col h-full animate-fade-in">
-        <div className="sticky top-0 z-20 bg-background border-b shrink-0">
+      <div className="flex flex-col animate-fade-in" style={{ minHeight: 0 }}>
+        <div className="bg-background border-b shrink-0">
           <div className="flex items-center justify-between px-4 py-3 gap-3">
             <div className="flex items-center gap-3 min-w-0">
               <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" onClick={() => {
@@ -358,7 +358,7 @@ export default function ReviewPage() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        <div>
           {filteredItems.length === 0 ? (
             <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">
               No items match the current filter.
