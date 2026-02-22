@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import ParAlertsBanner from "@/components/ParAlertsBanner";
+import { format } from "date-fns";
 
 // ─── Command Bar ───
 function CommandBar({
@@ -122,14 +123,10 @@ function KpiCard({
 function ActionCenter({
   criticalCount,
   pendingApprovals,
-  missingInventory,
-  parChanges,
   navigate,
 }: {
   criticalCount: number;
   pendingApprovals: number;
-  missingInventory: number;
-  parChanges: number;
   navigate: (path: string) => void;
 }) {
   const items = [
@@ -142,28 +139,12 @@ function ActionCenter({
       show: criticalCount > 0,
     },
     {
-      icon: ClipboardCheck,
-      label: `${missingInventory} Location${missingInventory !== 1 ? "s" : ""} Missing Weekly Inventory`,
-      color: "text-warning",
-      bg: "bg-warning/6",
-      path: "/app/inventory/enter",
-      show: missingInventory > 0,
-    },
-    {
       icon: Clock,
       label: `${pendingApprovals} Pending Invoice${pendingApprovals !== 1 ? "s" : ""}`,
       color: "text-primary",
       bg: "bg-primary/6",
       path: "/app/invoices",
       show: pendingApprovals > 0,
-    },
-    {
-      icon: Activity,
-      label: `${parChanges} PAR Levels Changed Significantly`,
-      color: "text-warning",
-      bg: "bg-warning/6",
-      path: "/app/par",
-      show: parChanges > 0,
     },
   ].filter((i) => i.show);
 
@@ -286,7 +267,9 @@ function SmartOrderPreview({
 }
 
 // ─── Usage & Trend Analytics ───
-function AnalyticsSection({ highUsage }: { highUsage: any[] }) {
+function AnalyticsSection({ highUsage, trendData }: { highUsage: any[]; trendData: { label: string; value: number }[] }) {
+  const maxTrendValue = Math.max(...trendData.map(d => d.value), 1);
+
   return (
     <div className="grid gap-5 lg:grid-cols-2">
       {/* High Usage Items */}
@@ -331,22 +314,34 @@ function AnalyticsSection({ highUsage }: { highUsage: any[] }) {
           <h3 className="text-sm font-bold tracking-tight">Inventory Value Trend</h3>
         </div>
         <CardContent className="pt-0 pb-4 px-5">
-          <div className="flex flex-col items-center py-8 text-center">
-            <div className="w-full h-32 flex items-end justify-between gap-1.5 px-2">
-              {[65, 72, 58, 80, 74, 90, 85, 88].map((h, i) => (
-                <div key={i} className="flex-1 flex flex-col items-center gap-1">
-                  <div
-                    className="w-full rounded-t-md bg-primary/15 hover:bg-primary/25 transition-colors"
-                    style={{ height: `${h}%` }}
-                  />
-                  <span className="text-[9px] text-muted-foreground/50 font-mono">
-                    W{i + 1}
-                  </span>
-                </div>
-              ))}
+          {trendData.length < 2 ? (
+            <div className="flex flex-col items-center py-8 text-center">
+              <BarChart3 className="h-8 w-8 text-muted-foreground/15 mb-3" />
+              <p className="text-sm font-medium text-muted-foreground">Not enough data yet</p>
+              <p className="text-xs text-muted-foreground/60 mt-0.5">Complete at least 2 approved inventory sessions to see trends.</p>
             </div>
-            <p className="text-[11px] text-muted-foreground/50 mt-3">Weekly inventory value (last 8 weeks)</p>
-          </div>
+          ) : (
+            <div className="flex flex-col items-center py-4">
+              <div className="w-full h-32 flex items-end justify-between gap-1.5 px-2">
+                {trendData.map((d, i) => (
+                  <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                    <div
+                      className="w-full rounded-t-md bg-primary/15 hover:bg-primary/25 transition-colors relative group"
+                      style={{ height: `${Math.max((d.value / maxTrendValue) * 100, 4)}%` }}
+                    >
+                      <div className="absolute -top-6 left-1/2 -translate-x-1/2 hidden group-hover:block text-[9px] font-mono bg-popover border border-border px-1.5 py-0.5 rounded shadow-sm whitespace-nowrap">
+                        ${d.value.toFixed(0)}
+                      </div>
+                    </div>
+                    <span className="text-[9px] text-muted-foreground/50 font-mono">
+                      {d.label}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[11px] text-muted-foreground/50 mt-3">Inventory value per approved session</p>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -354,7 +349,7 @@ function AnalyticsSection({ highUsage }: { highUsage: any[] }) {
 }
 
 // ─── Spend Overview ───
-function SpendOverview({ restaurantId, navigate }: { restaurantId: string; navigate: (p: string) => void }) {
+function SpendOverview({ restaurantId, locationId, navigate }: { restaurantId: string; locationId?: string; navigate: (p: string) => void }) {
   const [spendData, setSpendData] = useState<{ thisWeek: number; thisMonth: number; vendors: { name: string; total: number }[] }>({
     thisWeek: 0, thisMonth: 0, vendors: [],
   });
@@ -365,8 +360,14 @@ function SpendOverview({ restaurantId, navigate }: { restaurantId: string; navig
       const weekStart = new Date(now.getTime() - 7 * 86400000);
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-      const { data: recentPH } = await supabase.from("purchase_history").select("id, vendor_name, created_at")
+      let phQuery = supabase.from("purchase_history").select("id, vendor_name, created_at")
         .eq("restaurant_id", restaurantId).gte("created_at", monthStart.toISOString());
+
+      if (locationId) {
+        phQuery = phQuery.eq("location_id", locationId);
+      }
+
+      const { data: recentPH } = await phQuery;
 
       if (!recentPH?.length) return;
 
@@ -400,7 +401,7 @@ function SpendOverview({ restaurantId, navigate }: { restaurantId: string; navig
       setSpendData({ thisWeek, thisMonth, vendors });
     };
     fetchSpend();
-  }, [restaurantId]);
+  }, [restaurantId, locationId]);
 
   if (spendData.thisMonth === 0) return null;
 
@@ -444,7 +445,7 @@ function SpendOverview({ restaurantId, navigate }: { restaurantId: string; navig
   );
 }
 
-// ─── AI Insights Panel ───
+// ─── AI Insights Panel (Coming Soon) ───
 function AiInsights() {
   const insights = [
     { text: "Mozzarella usage increased 18% this week.", icon: TrendingUp, color: "text-success" },
@@ -453,18 +454,19 @@ function AiInsights() {
   ];
 
   return (
-    <Card className="border-primary/10 hover:shadow-md transition-all duration-200">
+    <Card className="border-border/60 hover:shadow-md transition-all duration-200 relative overflow-hidden">
       <div className="flex items-center gap-2 p-5 pb-3">
-        <Zap className="h-4 w-4 text-primary" />
-        <h3 className="text-sm font-bold tracking-tight">AI Insights</h3>
-        <Badge className="bg-primary/10 text-primary text-[10px] ml-1 h-5 border-0">Beta</Badge>
+        <Zap className="h-4 w-4 text-muted-foreground" />
+        <h3 className="text-sm font-bold tracking-tight text-muted-foreground">AI Insights</h3>
+        <Badge className="bg-muted text-muted-foreground text-[10px] ml-1 h-5 border-0">Coming Soon</Badge>
       </div>
       <CardContent className="pt-0 pb-4 px-5">
-        <div className="space-y-1">
+        <p className="text-xs text-muted-foreground/60 mb-3">AI-powered operational insights will analyze your usage trends, cost variances, and PAR deviations.</p>
+        <div className="space-y-1 opacity-40 pointer-events-none select-none">
           {insights.map((insight, i) => (
-            <div key={i} className="flex items-start gap-3 py-2.5 px-3 rounded-lg hover:bg-muted/30 transition-colors">
-              <insight.icon className={`h-4 w-4 mt-0.5 shrink-0 ${insight.color}`} />
-              <p className="text-sm leading-relaxed">{insight.text}</p>
+            <div key={i} className="flex items-start gap-3 py-2.5 px-3 rounded-lg">
+              <insight.icon className={`h-4 w-4 mt-0.5 shrink-0 text-muted-foreground`} />
+              <p className="text-sm leading-relaxed text-muted-foreground">{insight.text}</p>
             </div>
           ))}
         </div>
@@ -650,8 +652,14 @@ function PortfolioDashboard({ setCurrentRestaurant }: { setCurrentRestaurant: (r
       {/* KPI Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard icon={Package} label="Total Items Tracked" value={totalItems.toLocaleString()} accent="primary" />
-        <KpiCard icon={AlertTriangle} label="At Risk Items" value={totals.red + totals.yellow} change={-5} changeLabel="vs last period" accent="destructive" />
-        <KpiCard icon={DollarSign} label="Waste Exposure" value="$—" changeLabel="Based on overstock" accent="warning" />
+        <KpiCard icon={AlertTriangle} label="At Risk Items" value={String(totals.red + totals.yellow)} accent="destructive" changeLabel={`${totals.red} critical · ${totals.yellow} low`} />
+        <KpiCard
+          icon={Package}
+          label="Waste Exposure"
+          value="Coming Soon"
+          accent="warning"
+          changeLabel="Overstock analysis"
+        />
         <KpiCard icon={ShoppingCart} label="Smart Order Ready" value={`${totalOrders} orders`} accent="success" />
       </div>
 
@@ -660,8 +668,6 @@ function PortfolioDashboard({ setCurrentRestaurant }: { setCurrentRestaurant: (r
         <ActionCenter
           criticalCount={totals.red}
           pendingApprovals={0}
-          missingInventory={0}
-          parChanges={0}
           navigate={navigate}
         />
         <AiInsights />
@@ -683,13 +689,18 @@ function SingleDashboard() {
   const [recentOrders, setRecentOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [timeFilter, setTimeFilter] = useState("this_week");
+  const [inventoryValue, setInventoryValue] = useState(0);
+  const [missingCostCount, setMissingCostCount] = useState(0);
+  const [trendData, setTrendData] = useState<{ label: string; value: number }[]>([]);
 
   useEffect(() => {
     if (!currentRestaurant) return;
     const fetchData = async () => {
       setLoading(true);
       const rid = currentRestaurant.id;
+      const locId = currentLocation?.id;
 
+      // --- Latest approved session + items ---
       let sessionQuery = supabase
         .from("inventory_sessions")
         .select("id")
@@ -698,8 +709,8 @@ function SingleDashboard() {
         .order("approved_at", { ascending: false })
         .limit(1);
 
-      if (currentLocation) {
-        sessionQuery = sessionQuery.eq("location_id", currentLocation.id);
+      if (locId) {
+        sessionQuery = sessionQuery.eq("location_id", locId);
       }
 
       const { data: sessions } = await sessionQuery;
@@ -721,12 +732,54 @@ function SingleDashboard() {
           });
           setStockStatus({ red: r, yellow: y, green: g });
           setTopReorder(reorderList.sort((a, b) => b.suggestedOrder - a.suggestedOrder).slice(0, 8));
+
+          // Compute inventory value from latest session items
+          const invVal = items.reduce((sum, i) => sum + i.current_stock * (i.unit_cost || 0), 0);
+          setInventoryValue(invVal);
+          setMissingCostCount(items.filter(i => !i.unit_cost).length);
         }
       } else {
         setStockStatus({ red: 0, yellow: 0, green: 0 });
         setTopReorder([]);
+        setInventoryValue(0);
+        setMissingCostCount(0);
       }
 
+      // --- Inventory Value Trend: last 8 approved sessions ---
+      let trendQuery = supabase
+        .from("inventory_sessions")
+        .select("id, approved_at")
+        .eq("restaurant_id", rid)
+        .eq("status", "APPROVED")
+        .order("approved_at", { ascending: false })
+        .limit(8);
+
+      if (locId) {
+        trendQuery = trendQuery.eq("location_id", locId);
+      }
+
+      const { data: trendSessions } = await trendQuery;
+
+      if (trendSessions && trendSessions.length > 0) {
+        const trendResults: { label: string; value: number }[] = [];
+        for (const s of trendSessions) {
+          const { data: sItems } = await supabase
+            .from("inventory_session_items")
+            .select("current_stock, unit_cost")
+            .eq("session_id", s.id);
+          const val = (sItems || []).reduce((sum, i) => sum + i.current_stock * (i.unit_cost || 0), 0);
+          trendResults.push({
+            label: s.approved_at ? format(new Date(s.approved_at), "MMM d") : "?",
+            value: val,
+          });
+        }
+        // Reverse to chronological order
+        setTrendData(trendResults.reverse());
+      } else {
+        setTrendData([]);
+      }
+
+      // --- High Usage ---
       const { data: usage } = await supabase
         .from("usage_events")
         .select("item_name, quantity_used")
@@ -742,8 +795,9 @@ function SingleDashboard() {
         setHighUsage(Object.entries(grouped).map(([name, v]) => ({ name, ...v })).sort((a, b) => b.total - a.total).slice(0, 8));
       }
 
+      // --- Recent Orders ---
       let ordersQuery = supabase.from("orders").select("*").eq("restaurant_id", rid).order("created_at", { ascending: false }).limit(8);
-      if (currentLocation) ordersQuery = ordersQuery.eq("location_id", currentLocation.id);
+      if (locId) ordersQuery = ordersQuery.eq("location_id", locId);
       const { data: orders } = await ordersQuery;
       if (orders) setRecentOrders(orders);
       setLoading(false);
@@ -761,7 +815,6 @@ function SingleDashboard() {
     );
   }
 
-  const totalItems = stockStatus.red + stockStatus.yellow + stockStatus.green;
   const pendingOrders = recentOrders.filter(o => o.status === "PENDING").length;
 
   // Estimate reorder value
@@ -769,6 +822,10 @@ function SingleDashboard() {
     const cost = item.unit_cost || 0;
     return sum + item.suggestedOrder * cost;
   }, 0);
+
+  const inventoryValueLabel = missingCostCount > 0
+    ? `${missingCostCount} item${missingCostCount !== 1 ? "s" : ""} missing costs`
+    : "From latest approved session";
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -794,11 +851,10 @@ function SingleDashboard() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           icon={DollarSign}
-          label="Inventory Value"
-          value={totalItems > 0 ? `${totalItems} items` : "$0"}
-          change={3}
-          changeLabel="vs last period"
+          label="Inventory Value ($)"
+          value={inventoryValue > 0 ? `$${inventoryValue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` : "$0"}
           accent="primary"
+          changeLabel={inventoryValueLabel}
         />
         <KpiCard
           icon={AlertTriangle}
@@ -810,9 +866,9 @@ function SingleDashboard() {
         <KpiCard
           icon={Package}
           label="Waste Exposure"
-          value="$—"
+          value="Coming Soon"
           accent="warning"
-          changeLabel="Estimated overstock value"
+          changeLabel="Overstock analysis"
         />
         <KpiCard
           icon={ShoppingCart}
@@ -828,18 +884,22 @@ function SingleDashboard() {
         <ActionCenter
           criticalCount={stockStatus.red}
           pendingApprovals={pendingOrders}
-          missingInventory={0}
-          parChanges={0}
           navigate={navigate}
         />
         <SmartOrderPreview topReorder={topReorder} navigate={navigate} />
       </div>
 
       {/* Spend Overview */}
-      {currentRestaurant && <SpendOverview restaurantId={currentRestaurant.id} navigate={navigate} />}
+      {currentRestaurant && (
+        <SpendOverview
+          restaurantId={currentRestaurant.id}
+          locationId={currentLocation?.id}
+          navigate={navigate}
+        />
+      )}
 
       {/* Usage & Trends */}
-      <AnalyticsSection highUsage={highUsage} />
+      <AnalyticsSection highUsage={highUsage} trendData={trendData} />
 
       {/* AI Insights */}
       <AiInsights />
